@@ -19,12 +19,11 @@ IMG_URL=os.getenv("IMG_URL","https://image.pollinations.ai/prompt/{p}")
 
 # --- OWNER CONFIG ---
 OWNER_NAME="StarDev-il"
-OWNER_IMAGE_PATH="owner.jpg" # put owner.jpg in repo root
-OWNER_IMAGE_URL=os.getenv("OWNER_IMAGE_URL","https://i.imgur.com/8Km9tLL.png") # fallback url, change me
+OWNER_IMAGE_PATH="owner.jpg"
+OWNER_IMAGE_URL=os.getenv("OWNER_IMAGE_URL","https://i.imgur.com/8Km9tLL.png")
 OWNER_LINKS={
-    "GitHub":"https://github.com/StarDev-il",
-    "Telegram":"https://t.me/StarDev_il",
-    "Channel":"https://t.me/StarDevIl"
+    "Channel":"https://t.me/StarDevIl",
+    "WhatsApp":"https://wa.me/263783633309"
 }
 
 def get_system_prompt(name):
@@ -89,9 +88,7 @@ async def yt_search(query):
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(YT_SEARCH, params={"q":query}, timeout=15) as r:
-                print(f"YT {r.status} q={query}")
                 txt=await r.text()
-                print(f"YT raw {txt[:800]}")
                 if r.status!=200: return []
                 j=json.loads(txt)
                 if isinstance(j, list): return j
@@ -113,20 +110,22 @@ async def owner_cmd(update, context):
     caption = (
         f"👑 **Owner: {OWNER_NAME}**\n\n"
         f"I'm Star AI made by **{OWNER_NAME}** 🔥\n"
-        f"The genius (and baka) who codes all night!\n\n"
+        f"The genius who codes all night!\n\n"
         f"Contact him below:"
     )
     buttons = [
-        [InlineKeyboardButton("👨‍💻 GitHub", url=OWNER_LINKS["GitHub"]),
-         InlineKeyboardButton("✈️ Telegram", url=OWNER_LINKS["Telegram"])],
-        [InlineKeyboardButton("📢 Channel", url=OWNER_LINKS["Channel"])]
+        [InlineKeyboardButton("💬 WhatsApp", url=OWNER_LINKS["WhatsApp"])],
+        [InlineKeyboardButton("📢 Grand Channel", url=OWNER_LINKS["Channel"])]
     ]
     markup = InlineKeyboardMarkup(buttons)
     try:
         if os.path.exists(OWNER_IMAGE_PATH):
-            await update.message.reply_photo(photo=open(OWNER_IMAGE_PATH,'rb'), caption=caption, parse_mode="Markdown", reply_markup=markup)
+            with open(OWNER_IMAGE_PATH,'rb') as photo:
+                await update.message.reply_photo(photo=photo, caption=caption, parse_mode="Markdown", reply_markup=markup)
+            return
         else:
             await update.message.reply_photo(photo=OWNER_IMAGE_URL, caption=caption, parse_mode="Markdown", reply_markup=markup)
+            return
     except Exception as e:
         print(f"Owner image fail {e}")
         await update.message.reply_text(caption, parse_mode="Markdown", reply_markup=markup)
@@ -138,6 +137,11 @@ async def brain(update,context):
     text=(update.message.text or "").strip()
     if not text: return
     low=text.lower(); uid=update.effective_user.id; cur=get_voice(uid)
+
+    # LAZY TRIGGER
+    if any(w in low for w in ["i'm lazy","im lazy","i am lazy","so lazy","being lazy","too lazy","i'm tired","im tired","so tired","no energy","feeling lazy"]):
+        await update.message.reply_text(f"Ara ara {remember(update.effective_user)} being lazy again? Baka~ 😤 Get up!...fine, rest 5 mins, I'll be here. Don't make me drag you! 💤🔥")
+        return
 
     # OWNER - FIRST
     if any(x in low for x in ["who is owner","who's owner","who is your owner","who made you","who created you","bot owner","who is stardev","stardev-il","owner name"]):
@@ -155,17 +159,16 @@ async def brain(update,context):
             msg=await update.message.reply_text(f"🔍 Searching **{q}**...",parse_mode="Markdown")
             results=await yt_search(q)
             if not results:
-                await msg.edit_text(f"No results for `{q}` 😅 Try `yt DJ`"); return
+                await msg.edit_text(f"No results for `{q}` 😅"); return
             txt=f"🎵 **{q}:**\n\n"; btns=[]
             for i,it in enumerate(results[:10],1):
                 if isinstance(it, dict):
-                    title=it.get("title") or it.get("name") or it.get("videoTitle") or "Untitled"
-                    vid=it.get("videoId") or it.get("id") or it.get("video_id")
-                    url=it.get("url") or it.get("link") or it.get("videoUrl")
+                    title=it.get("title") or it.get("name") or "Untitled"
+                    vid=it.get("videoId") or it.get("id")
+                    url=it.get("url") or it.get("link")
                     if not url and vid:
                         url=f"https://www.youtube.com/watch?v={vid}" if len(str(vid))==11 else f"https://youtu.be/{vid}"
-                    channel=it.get("channel") or it.get("author") or ""
-                else: title=str(it); url=None; channel=""
+                else: title=str(it); url=None
                 txt+=f"{i}. **{title[:45]}**\n"
                 if url: btns.append([InlineKeyboardButton(f"▶️ {i}. {title[:25]}", url=url)])
             await msg.edit_text(txt[:3800],parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(btns[:10]) if btns else None)
@@ -193,7 +196,9 @@ async def voice_brain(update,context):
     voice=get_voice(update.effective_user.id)
     reply=await get_ai_reply(remember(update.effective_user),"voice note hi")
     path=await tts(voice,reply)
-    if path: await update.message.reply_voice(voice=open(path,'rb'),caption=f"[{voice}] {reply[:180]}"); os.remove(path)
+    if path:
+        with open(path,'rb') as v: await update.message.reply_voice(voice=v,caption=f"[{voice}] {reply[:180]}")
+        os.remove(path)
     else: await update.message.reply_text(reply)
 
 async def file_brain(update,context):
@@ -236,7 +241,6 @@ async def file_brain(update,context):
         if not content.strip(): await status.edit_text("Empty file"); return
         r=await get_ai_reply(remember(update.effective_user),f"File {fn}:\n{content[:10000]}\nExplain")
         await status.edit_text(f"📄 **{fn}** ({len(content)} chars)\n\n{r[:3500]}",parse_mode="Markdown")
-        # FIXED - short callback, no file_id
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("🎤 Voice summary", callback_data="voice_summary")]])
         await update.message.reply_text("Want voice?", reply_markup=kb)
     except Exception as e:
@@ -252,14 +256,23 @@ async def on_button(u,c):
     elif data=="voice_summary":
         voice=get_voice(q.from_user.id)
         path=await tts(voice,"File summarized above baka~!")
-        if path: await c.bot.send_voice(chat_id=q.message.chat_id, voice=open(path,'rb')); os.remove(path)
+        if path:
+            with open(path,'rb') as vf: await c.bot.send_voice(chat_id=q.message.chat_id, voice=vf)
+            os.remove(path)
 
 flask_app=Flask(__name__)
 @flask_app.route('/')
-def home(): return "Star AI Owner+YT+Zip Fixed"
-def run_flask(): flask_app.run(host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
+def home(): return "Star AI Live by StarDev-il"
+def run_flask():
+    port=int(os.environ.get("PORT",10000))
+    flask_app.run(host="0.0.0.0", port=port, debug=False)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
 async def main():
-    threading.Thread(target=run_flask,daemon=True).start()
+    if not TOKEN:
+        print("ERROR: BOT_TOKEN missing!")
+        return
     app=Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",start_cmd))
     app.add_handler(CommandHandler("owner",owner_cmd))
@@ -270,6 +283,8 @@ async def main():
     await app.initialize(); await app.start()
     await discover_voices()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅ Fixed Bot Running",flush=True)
+    print("✅ StarDev-il Bot Live!",flush=True)
     await asyncio.Event().wait()
-if __name__=="__main__": asyncio.run(main())
+
+if __name__=="__main__":
+    asyncio.run(main())
