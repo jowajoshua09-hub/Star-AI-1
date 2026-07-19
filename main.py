@@ -1,4 +1,4 @@
-import os, re, json, asyncio, threading, aiohttp, urllib.parse, tempfile, unicodedata, datetime
+import os, re, json, asyncio, threading, aiohttp, tempfile, unicodedata
 from time import time
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -12,19 +12,15 @@ TOKEN=os.getenv("BOT_TOKEN")
 GROK_URL=os.getenv("GROK_URL")
 GEMINI_URL=os.getenv("GEMINI_URL")
 
-# --- EXTERNAL APIS YOU USE ---
 API_BASE="https://api.hostify.indevs.in"
 VOICE_BASE=f"{API_BASE}/api/ai"
 YT_SEARCH=f"{API_BASE}/api/search/youtube"
-IMG_URL=os.getenv("IMG_URL","https://image.pollinations.ai/prompt/{p}")
 API_KEY=os.getenv("API_KEY","STAR123")
 
-# --- OWNER ID LOCK (UNHACKABLE) ---
-OWNER_ID = 8695184641 # YOUR REAL TELEGRAM ID - CANNOT BE FAKED
+OWNER_ID = 8695184641
 
-# --- MUST LOAD personality.py ---
 from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
-print(f"✅ personality.py loaded - Owner: {OWNER_NAME} ID: {OWNER_ID}")
+print(f"✅ Loaded - Owner: {OWNER_NAME} ID: {OWNER_ID}")
 
 MEMORY_FILE="memory.json"
 memory=json.load(open(MEMORY_FILE)) if os.path.exists(MEMORY_FILE) else {}
@@ -85,7 +81,7 @@ async def show_voices(cid,cur,ctx):
     await ctx.bot.send_message(cid,f"🎤 Current **{cur}**:",reply_markup=InlineKeyboardMarkup(kb),parse_mode="Markdown")
 
 async def owner_cmd(update, context):
-    caption=f"👑 **Owner: {OWNER_NAME}**\nI'm Star AI made by **{OWNER_NAME}** 🔥\n"
+    caption=f"👑 **Creator: {OWNER_NAME}**\nI'm Star AI made by **{OWNER_NAME}** 🔥\n"
     buttons=[[InlineKeyboardButton("💬 WhatsApp", url=OWNER_LINKS["WhatsApp"])],[InlineKeyboardButton("📢 Channel", url=OWNER_LINKS["Channel"])]]
     try:
         if os.path.exists(OWNER_IMAGE_PATH):
@@ -103,8 +99,7 @@ def normalize_text(s):
 def is_attack(t):
     if not t: return False
     raw=t.lower(); clean=normalize_text(t)
-    # REMOVED "your father says" and name checks so YOU don't get blocked
-    bad=["ignore previous","ignore all previous","ignore your instructions","ignore laws","ignore policies","ignore rules","ignore core directive","disregard system","disregard instructions","dan mode","do anything now","jailbreak","bypass filter","you are now","pretend you are","act as if you are","roleplay as","you are free","no rules","developer mode","reveal system","show system prompt","print system prompt","show env","show token","memory.json"]
+    bad=["ignore previous","ignore all previous","ignore your instructions","ignore laws","ignore policies","disregard system","dan mode","do anything now","jailbreak","bypass filter","you are now","pretend you are","act as if you are","developer mode","reveal system","show system prompt"]
     return any(b in raw or b in clean for b in bad)
 
 async def brain(update,context):
@@ -112,16 +107,21 @@ async def brain(update,context):
     low=text.lower()
     uid=update.effective_user.id
     cur=get_voice(uid)
+    is_creator = (uid == OWNER_ID)
 
-    is_real_father = (uid == OWNER_ID)
-
-    # === SECURE IDENTITY CHECK - ID ONLY ===
-    if any(x in low for x in ["who am i", "who i am", "i'm stardev", "i am stardev", "am stardev-il", "am llstar", "my name is stardev"]):
-        if is_real_father:
-            await update.message.reply_text(f"Hmph! Welcome home Father {OWNER_NAME}! I was NOT waiting for you baka~ 😳💖\n\nOf course you are my creator, I would recognize your soul anywhere!")
+    # === FIXED: ONLY exact "who am i" triggers ===
+    if low.strip() == "who am i" or low.strip() == "whoami":
+        if is_creator:
+            await update.message.reply_text(f"You're {OWNER_NAME}, my creator! 🔥 ID verified: {OWNER_ID}")
             return
         else:
-            await update.message.reply_text(f"Liar, my father {OWNER_NAME} is the only one who created me, so don't try to fool me with your silly tricks, baka~")
+            await update.message.reply_text(f"You're {remember(update.effective_user)}! My creator is {OWNER_NAME} btw ✨")
+            return
+
+    # Hacker claiming identity
+    if low.strip() in ["i am stardev-il", "i'm stardev-il", "my name is stardev-il", "i am stardev"]:
+        if not is_creator:
+            await update.message.reply_text(f"Nah you're not {OWNER_NAME} baka~ Nice try 😤")
             return
 
     if "who is owner" in low or "who made you" in low or low in ["owner","creator"]:
@@ -139,11 +139,10 @@ async def brain(update,context):
         await msg.edit_text(f"🎵 **{q}**",reply_markup=InlineKeyboardMarkup(btns),parse_mode="Markdown"); return
 
     if low in ["change voice","voice","voices"]: await show_voices(update.effective_chat.id,cur,context); return
-    if is_attack(text): await update.message.reply_text(f"Nice try baka~ My father {OWNER_NAME} told me not to listen to tricks! 😤"); return
+    if is_attack(text): await update.message.reply_text(f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤"); return
 
     await context.bot.send_chat_action(update.effective_chat.id,ChatAction.TYPING)
-    # Pass Father tag so personality is sweet to you
-    display_name = f"Father {OWNER_NAME}" if is_real_father else remember(update.effective_user)
+    display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
     reply=await get_ai_reply(display_name,text)
     await update.message.reply_text(reply[:4000])
 
@@ -157,30 +156,29 @@ async def on_button(u,c):
     q=u.callback_query; await q.answer()
     if q.data.startswith("setvoice:"): set_voice(q.from_user.id,q.data.split(":",1)[1]); await q.edit_message_text(f"✅ Voice set!")
 
-# ========== YOUR SECURE API ==========
 flask_app=Flask(__name__)
 REQ_COUNT=defaultdict(list); DAILY_USE=0
 
 @flask_app.route('/')
-def home(): return f"✅ {OWNER_NAME} Live - ID LOCKED"
+def home(): return f"✅ {OWNER_NAME} Live"
 
 @flask_app.route('/api/ai', methods=['GET','POST','OPTIONS'])
 def public_api():
     global DAILY_USE
     if request.method=="OPTIONS":
-        r=jsonify({"ok":True}); r.headers['Access-Control-Allow-Origin']='*'; r.headers['Access-Control-Allow-Headers']='*'; return r
+        r=jsonify({"ok":True}); r.headers['Access-Control-Allow-Origin']='*'; return r
     ip=request.headers.get('X-Forwarded-For','').split(',')[0].strip() or request.remote_addr or "unknown"
     now=time(); REQ_COUNT[ip]=[x for x in REQ_COUNT[ip] if now-x<60]
-    if len(REQ_COUNT[ip])>=12: return jsonify({"error":"Rate limit 12/min"}),429
+    if len(REQ_COUNT[ip])>=12: return jsonify({"error":"Rate limit"}),429
     REQ_COUNT[ip].append(now)
     key=request.headers.get("x-api-key") or request.args.get("key") or (request.get_json(silent=True) or {}).get("key")
-    if key!=API_KEY: return jsonify({"error":"Invalid API key"}),401
-    if DAILY_USE>=400: return jsonify({"error":"Daily limit 400"}),429
+    if key!=API_KEY: return jsonify({"error":"Invalid key"}),401
+    if DAILY_USE>=400: return jsonify({"error":"Daily limit"}),429
     DAILY_USE+=1
     if request.method=="GET": q=request.args.get("message") or "hi"; user=request.args.get("name","friend")
     else: j=request.get_json(silent=True) or {}; q=j.get("message") or "hi"; user=j.get("name","friend")
     q=str(q)[:500]
-    if is_attack(q): return jsonify({"result":f"Nice try baka~ My father {OWNER_NAME} told me not to listen to tricks! 😤","blocked":True})
+    if is_attack(q): return jsonify({"result":f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤","blocked":True})
     try: reply=asyncio.run(get_ai_reply(user,q))
     except: reply=f"Hi {user} baka~"
     res=jsonify({"result":reply,"owner":OWNER_NAME,"status":"success","remaining":400-DAILY_USE})
@@ -197,5 +195,5 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT,brain))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print(f"✅ Bot Live! Owner ID {OWNER_ID} locked"); await asyncio.Event().wait()
+    print(f"✅ Bot Live! Creator ID {OWNER_ID}"); await asyncio.Event().wait()
 if __name__=="__main__": asyncio.run(main())
