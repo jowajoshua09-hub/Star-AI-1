@@ -1,4 +1,5 @@
-python-telegram-bot==21.6
-aiohttp==3.9.5
-python-dotenv==1.0.1
-Flask==3.0.3
+python-telegram-bot==20.7
+Flask
+python-dotenv
+aiohttp
+PyPDF2
