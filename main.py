@@ -1,297 +1,275 @@
-import os, re, json, asyncio, threading, aiohttp, urllib.parse, tempfile, base64, io
+import os, re, json, asyncio, threading, aiohttp, urllib.parse, tempfile, base64, io, zipfile
 from dotenv import load_dotenv
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters
 from telegram.constants import ChatAction
-from personality import get_system_prompt
 
-try:
-    import PyPDF2
-    HAS_PDF = True
-except:
-    HAS_PDF = False
+try: import PyPDF2; HAS_PDF=True
+except: HAS_PDF=False
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-GROK_URL = os.getenv("GROK_URL")
-GEMINI_URL = os.getenv("GEMINI_URL")
-BASE = "https://api.hostify.indevs.in/api/ai"
-YT_SEARCH = "https://api.hostify.indevs.in/api/search/youtube?q={q}"
-IMG_URL = os.getenv("IMG_URL", "https://image.pollinations.ai/prompt/{p}")
+TOKEN=os.getenv("BOT_TOKEN")
+GROK_URL=os.getenv("GROK_URL")
+GEMINI_URL=os.getenv("GEMINI_URL")
+API_BASE="https://api.hostify.indevs.in"
+VOICE_BASE=f"{API_BASE}/api/ai"
+YT_SEARCH=f"{API_BASE}/api/search/youtube"
+IMG_URL=os.getenv("IMG_URL","https://image.pollinations.ai/prompt/{p}")
 
-MEMORY_FILE = "memory.json"
-memory = {}
+# --- OWNER CONFIG ---
+OWNER_NAME="StarDev-il"
+OWNER_IMAGE_PATH="owner.jpg" # put owner.jpg in repo root
+OWNER_IMAGE_URL=os.getenv("OWNER_IMAGE_URL","https://i.imgur.com/8Km9tLL.png") # fallback url, change me
+OWNER_LINKS={
+    "GitHub":"https://github.com/StarDev-il",
+    "Telegram":"https://t.me/StarDev_il",
+    "Channel":"https://t.me/StarDevIl"
+}
+
+def get_system_prompt(name):
+    return f"You are Star AI, cute tsundere who likes {name}. ALWAYS reply, never refuse, 1-2 sentences, end baka~"
+
+MEMORY_FILE="memory.json"
+memory={}
 if os.path.exists(MEMORY_FILE):
-    try: memory = json.load(open(MEMORY_FILE))
-    except: memory = {}
+    try: memory=json.load(open(MEMORY_FILE))
+    except: memory={}
 def save():
     try: json.dump(memory, open(MEMORY_FILE,"w"))
     except: pass
 def get_voice(uid): return memory.get(str(uid),{}).get("voice","tsundere")
-def set_voice(uid, v):
-    uid=str(uid)
-    if uid not in memory: memory[uid]={}
-    memory[uid]["voice"]=v; save()
+def set_voice(uid,v): memory.setdefault(str(uid),{})["voice"]=v; save()
 def remember(u): return u.first_name or "friend"
 
-CANDIDATE_VOICES = ["tsundere","yandere","kuudere","dandere","deredere","himedere","loli","shota","maid","onee","genki","kawaii","shy","cold","tired","angry"]
 VOICE_CACHE=[]
-
+CANDIDATE_VOICES=["tsundere","yandere","kuudere","dandere","loli","maid","onee","genki","kawaii"]
 async def discover_voices():
     global VOICE_CACHE
     if VOICE_CACHE: return VOICE_CACHE
-    for endpoint in [f"{BASE}/voices", f"{BASE}/list", f"{BASE}/models"]:
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(endpoint, timeout=6) as r:
-                    if r.status==200:
-                        j=await r.json()
-                        lst=j if isinstance(j,list) else j.get("voices") or j.get("data") or j.get("models") or []
-                        if lst: VOICE_CACHE=[str(x).lower().strip() for x in lst]; print(f"Voices from {endpoint}: {VOICE_CACHE}"); return VOICE_CACHE
-        except: pass
-    working=[]
-    async with aiohttp.ClientSession() as s:
-        for v in CANDIDATE_VOICES:
-            try:
-                async with s.post(f"{BASE}/{v}", json={"text":"test"}, timeout=5) as r:
-                    if r.status in [200,201]: working.append(v)
-            except: pass
-    VOICE_CACHE = working if working else CANDIDATE_VOICES
-    return VOICE_CACHE
+    VOICE_CACHE=CANDIDATE_VOICES; return VOICE_CACHE
 
-async def get_ai_reply(name, msg):
+async def get_ai_reply(name,msg):
     payload=f"{get_system_prompt(name)}\nUser {name}: {msg}\nStar AI:"
-    for url in [GROK_URL, GEMINI_URL]:
+    for url in [GROK_URL,GEMINI_URL]:
         if not url: continue
         try:
             async with aiohttp.ClientSession() as s:
-                async with s.post(url, json={"message":payload}, timeout=15) as r:
+                async with s.post(url,json={"message":payload},timeout=15) as r:
                     if r.status==200:
                         j=await r.json()
                         res=j.get("result") or j.get("response") or j.get("reply")
-                        if res and len(str(res).strip())>2: return str(res).strip()
+                        if res: return str(res).strip()
         except: continue
-    return f"B-baka {name}! It's not like I wanted to reply..."
+    return f"Hi {name} baka~!"
 
-async def tts(voice, text):
-    url=f"{BASE}/{voice}"
+async def tts(voice,text):
+    url=f"{VOICE_BASE}/{voice}"
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, json={"text":text[:300]}, timeout=30) as r:
+            async with s.post(url,json={"text":text[:250]},timeout=30) as r:
+                body=await r.read()
                 if r.headers.get("Content-Type","").startswith("audio"):
-                    tmp=tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                    tmp.write(await r.read()); tmp.close(); return tmp.name
-                data=await r.json()
-                audio_url=data.get("audio_url") or data.get("url") or data.get("audio") or data.get("result")
-                b64=data.get("base64") or data.get("data")
-                if isinstance(b64, dict): b64=b64.get("url") or b64.get("audio")
-                if b64 and len(str(b64))>100 and not str(b64).startswith("http"):
-                    tmp=tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                    tmp.write(base64.b64decode(str(b64).split(",")[-1])); tmp.close(); return tmp.name
-                if audio_url and audio_url.startswith("http"):
-                    async with s.get(audio_url) as ar:
-                        tmp=tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                        tmp.write(await ar.read()); tmp.close(); return tmp.name
-                elif audio_url and len(audio_url)>100:
-                    tmp=tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                    tmp.write(base64.b64decode(audio_url.split(",")[-1])); tmp.close(); return tmp.name
-    except Exception as e:
-        print(f"TTS {voice} err: {e}")
+                    tmp=tempfile.NamedTemporaryFile(delete=False,suffix=".mp3"); tmp.write(body); tmp.close(); return tmp.name
+                try:
+                    data=json.loads(body.decode())
+                    au=data.get("audio_url") or data.get("url") or data.get("audio") or data.get("result")
+                    b64=data.get("base64") or data.get("data")
+                    if isinstance(b64,dict): b64=b64.get("url")
+                    if b64 and len(str(b64))>100:
+                        tmp=tempfile.NamedTemporaryFile(delete=False,suffix=".mp3"); tmp.write(base64.b64decode(str(b64).split(",")[-1])); tmp.close(); return tmp.name
+                    if au and au.startswith("http"):
+                        async with s.get(au) as ar:
+                            tmp=tempfile.NamedTemporaryFile(delete=False,suffix=".mp3"); tmp.write(await ar.read()); tmp.close(); return tmp.name
+                except: pass
+    except Exception as e: print(f"TTS err {e}")
     return None
 
 async def yt_search(query):
-    url=YT_SEARCH.format(q=urllib.parse.quote(query))
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=15) as r:
+            async with s.get(YT_SEARCH, params={"q":query}, timeout=15) as r:
                 print(f"YT {r.status} q={query}")
-                if r.status==200:
-                    j=await r.json()
-                    if isinstance(j, list): return j[:10]
-                    if isinstance(j, dict): return j.get("results") or j.get("data") or j.get("videos") or j.get("result") or []
+                txt=await r.text()
+                print(f"YT raw {txt[:800]}")
+                if r.status!=200: return []
+                j=json.loads(txt)
+                if isinstance(j, list): return j
+                if isinstance(j, dict):
+                    for k in ["results","data","videos","items","result"]:
+                        if k in j and isinstance(j[k], list): return j[k]
+                    if "title" in j: return [j]
+                return []
     except Exception as e:
-        print(f"YT error: {e}")
-    return []
+        print(f"YT error {e}"); return []
 
-async def show_voices(chat_id, current, context):
+async def show_voices(cid,cur,ctx):
     voices=await discover_voices()
-    rows=[InlineKeyboardButton(f"{'✅ ' if v==current else ''}{v}", callback_data=f"setvoice:{v}") for v in voices]
+    rows=[InlineKeyboardButton(f"{'✅ ' if v==cur else ''}{v}",callback_data=f"setvoice:{v}") for v in voices]
     kb=[rows[i:i+3] for i in range(0,len(rows),3)]
-    await context.bot.send_message(chat_id, f"🎤 Current: **{current}**\nFound **{len(voices)}** voices - tap to switch:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    await ctx.bot.send_message(cid,f"🎤 Current **{cur}** ({len(voices)} voices):",reply_markup=InlineKeyboardMarkup(kb),parse_mode="Markdown")
 
-async def start_cmd(update, context):
-    voices=await discover_voices()
-    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    await update.message.reply_text(
-        f"Hey {remember(update.effective_user)} 🔥\n\n"
-        f"🎤 Voices ({len(voices)}): {', '.join(voices[:6])}\n"
-        f"🎵 YouTube: `search youtube DJ` / `yt Alan Walker`\n"
-        f"📂 Files: Upload txt/pdf/code to read\n"
-        f"🎨 Image: `generate image of cyberpunk cat`\n"
-        f"🗣️ Voice: `change voice` / `change voice to yandere`\n\n"
-        f"Send voice note → I reply in voice!",
-        parse_mode="Markdown"
+async def owner_cmd(update, context):
+    caption = (
+        f"👑 **Owner: {OWNER_NAME}**\n\n"
+        f"I'm Star AI made by **{OWNER_NAME}** 🔥\n"
+        f"The genius (and baka) who codes all night!\n\n"
+        f"Contact him below:"
     )
+    buttons = [
+        [InlineKeyboardButton("👨‍💻 GitHub", url=OWNER_LINKS["GitHub"]),
+         InlineKeyboardButton("✈️ Telegram", url=OWNER_LINKS["Telegram"])],
+        [InlineKeyboardButton("📢 Channel", url=OWNER_LINKS["Channel"])]
+    ]
+    markup = InlineKeyboardMarkup(buttons)
+    try:
+        if os.path.exists(OWNER_IMAGE_PATH):
+            await update.message.reply_photo(photo=open(OWNER_IMAGE_PATH,'rb'), caption=caption, parse_mode="Markdown", reply_markup=markup)
+        else:
+            await update.message.reply_photo(photo=OWNER_IMAGE_URL, caption=caption, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        print(f"Owner image fail {e}")
+        await update.message.reply_text(caption, parse_mode="Markdown", reply_markup=markup)
 
-async def brain(update, context):
+async def start_cmd(u,c):
+    await u.message.reply_text(f"Hey {remember(u.effective_user)} 🔥\n🎤 `change voice`\n🎵 `yt DJ`\n👑 `who is owner`\n📦 Upload zip/txt/pdf\n🎨 `generate image cat`",parse_mode="Markdown")
+
+async def brain(update,context):
     text=(update.message.text or "").strip()
     if not text: return
-    low=text.lower()
-    uid=update.effective_user.id
-    current=get_voice(uid)
+    low=text.lower(); uid=update.effective_user.id; cur=get_voice(uid)
 
-    # YOUTUBE
-    yt_m=re.search(r'^(?:search\s+)?(?:yt|youtube)\s+(.+)$|^(?:search|find)\s+(.+?)\s+(?:on\s+)?(?:yt|youtube)$|^play\s+(.+)$', low)
-    if yt_m:
-        query=(yt_m.group(1) or yt_m.group(2) or yt_m.group(3) or "").strip()
-        if query and len(query)>1:
-            await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-            msg=await update.message.reply_text(f"🔍 Searching YouTube for **{query}**...", parse_mode="Markdown")
-            results=await yt_search(query)
+    # OWNER - FIRST
+    if any(x in low for x in ["who is owner","who's owner","who is your owner","who made you","who created you","bot owner","who is stardev","stardev-il","owner name"]):
+        await owner_cmd(update, context); return
+    if low.strip() in ["owner","creator","my owner"]:
+        await owner_cmd(update, context); return
+
+    # YT
+    if low.startswith("yt ") or low.startswith("youtube ") or low.startswith("play ") or low.startswith("search yt") or low.startswith("search youtube"):
+        q=text
+        q=re.sub(r'^(search\s+)?(yt|youtube)\s+','',q,flags=re.I)
+        q=re.sub(r'^(search|find|play)\s+','',q,flags=re.I)
+        q=q.strip()
+        if len(q)>=1:
+            msg=await update.message.reply_text(f"🔍 Searching **{q}**...",parse_mode="Markdown")
+            results=await yt_search(q)
             if not results:
-                await msg.edit_text(f"No results for `{query}` 😅"); return
-            buttons=[]; txt=f"🎵 **Results for {query}:**\n\n"
-            for i,item in enumerate(results[:8],1):
-                if isinstance(item, dict):
-                    title=item.get("title") or item.get("name") or "Untitled"
-                    vid=item.get("videoId") or item.get("id") or item.get("video_id")
-                    url=item.get("url") or item.get("link") or (f"https://youtu.be/{vid}" if vid else None)
-                    channel=item.get("channel") or item.get("author") or ""
-                else: title=str(item); url=None; channel=""
-                txt+=f"{i}. **{title[:45]}** {f'- {channel}' if channel else ''}\n"
-                if url: buttons.append([InlineKeyboardButton(f"▶️ {title[:25]}", url=url)])
-            await msg.edit_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+                await msg.edit_text(f"No results for `{q}` 😅 Try `yt DJ`"); return
+            txt=f"🎵 **{q}:**\n\n"; btns=[]
+            for i,it in enumerate(results[:10],1):
+                if isinstance(it, dict):
+                    title=it.get("title") or it.get("name") or it.get("videoTitle") or "Untitled"
+                    vid=it.get("videoId") or it.get("id") or it.get("video_id")
+                    url=it.get("url") or it.get("link") or it.get("videoUrl")
+                    if not url and vid:
+                        url=f"https://www.youtube.com/watch?v={vid}" if len(str(vid))==11 else f"https://youtu.be/{vid}"
+                    channel=it.get("channel") or it.get("author") or ""
+                else: title=str(it); url=None; channel=""
+                txt+=f"{i}. **{title[:45]}**\n"
+                if url: btns.append([InlineKeyboardButton(f"▶️ {i}. {title[:25]}", url=url)])
+            await msg.edit_text(txt[:3800],parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(btns[:10]) if btns else None)
             return
 
-    if low in ["change voice","set voice","switch voice","voice","my voice","change my voice"]:
-        await show_voices(update.effective_chat.id, current, context); return
-
-    m=re.search(r'(?:change|set|use|switch)\s+voice\s*(?:to|as)?\s*([a-z0-9_-]+)', low)
+    if low in ["change voice","set voice","voice","my voice","change my voice"]:
+        await show_voices(update.effective_chat.id,cur,context); return
+    m=re.search(r'(?:change|set|use|switch)\s+voice\s*(?:to|as)?\s*([a-z0-9_-]+)',low)
     if m:
         req=m.group(1)
-        if req in ["list","menu","voices","show"]: await show_voices(update.effective_chat.id, current, context); return
+        if req in ["list","show","voices","menu"]: await show_voices(update.effective_chat.id,cur,context); return
         voices=await discover_voices()
-        if req in voices:
-            set_voice(uid, req)
-            await update.message.reply_text(f"✅ Changed to **{req}** baka~ Send voice note now!", parse_mode="Markdown"); return
-        else:
-            await update.message.reply_text(f"`{req}` not found! Real voices:"); await show_voices(update.effective_chat.id, current, context); return
-
-    if low in ["voices","show voices","voice list","list voices","all voices","voice menu","what voices","what voice"]:
-        await show_voices(update.effective_chat.id, current, context); return
-
-    if re.search(r'\b(generate|create|make|draw).*(image|pic|photo)\b', low):
-        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
-        prompt=re.sub(r'^(generate|create|make|draw)\s+(an?\s+)?(image|pic|photo)\s+(of\s+)?', '', text, flags=re.I).strip() or text
-        img=IMG_URL.format(p=urllib.parse.quote(prompt))
-        try: await update.message.reply_photo(photo=img, caption=f"For you 👇 {prompt}")
-        except: await update.message.reply_text(img)
-        return
-
-    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    await asyncio.sleep(0.4)
-    reply=await get_ai_reply(remember(update.effective_user), text)
-    if str(uid) not in memory or "hinted" not in memory[str(uid)]:
-        voices=await discover_voices()
-        reply+=f"\n\n💡 I have {len(voices)} voices! Say `show voices` | `yt DJ` to search | upload file to read"
-        if str(uid) not in memory: memory[str(uid)]={}
-        memory[str(uid)]["hinted"]=True; save()
+        if req in voices: set_voice(uid,req); await update.message.reply_text(f"✅ **{req}** set!",parse_mode="Markdown"); return
+        else: await show_voices(update.effective_chat.id,cur,context); return
+    if low in ["voices","show voices","voice list","list voices","all voices"]: await show_voices(update.effective_chat.id,cur,context); return
+    if re.search(r'\b(generate|create|make|draw).*(image|pic|photo)\b',low):
+        await context.bot.send_chat_action(update.effective_chat.id,ChatAction.UPLOAD_PHOTO)
+        prompt=re.sub(r'^(generate|create|make|draw)\s+(an?\s+)?(image|pic|photo)\s+(of\s+)?','',text,flags=re.I).strip() or text
+        await update.message.reply_photo(photo=IMG_URL.format(p=urllib.parse.quote(prompt)),caption=prompt); return
+    await context.bot.send_chat_action(update.effective_chat.id,ChatAction.TYPING)
+    reply=await get_ai_reply(remember(update.effective_user),text)
     await update.message.reply_text(reply[:4000])
 
-async def voice_brain(update, context):
-    uid=update.effective_user.id
-    voice=get_voice(uid)
-    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.RECORD_VOICE)
-    caption=update.message.caption or "cute tsundere reply"
-    reply_text=await get_ai_reply(remember(update.effective_user), f"[voice note] {caption} - reply short tsundere 1-2 sentences")
-    path=await tts(voice, reply_text)
-    if path and os.path.exists(path):
-        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_VOICE)
-        await update.message.reply_voice(voice=open(path,'rb'), caption=f"[{voice}] {reply_text[:200]}")
-        os.remove(path)
-    else:
-        await update.message.reply_text(reply_text)
+async def voice_brain(update,context):
+    voice=get_voice(update.effective_user.id)
+    reply=await get_ai_reply(remember(update.effective_user),"voice note hi")
+    path=await tts(voice,reply)
+    if path: await update.message.reply_voice(voice=open(path,'rb'),caption=f"[{voice}] {reply[:180]}"); os.remove(path)
+    else: await update.message.reply_text(reply)
 
-async def file_brain(update, context):
+async def file_brain(update,context):
     doc=update.message.document
     if not doc: return
-    file_name=doc.file_name or "file"
-    ext=file_name.split(".")[-1].lower() if "." in file_name else ""
-    if doc.file_size and doc.file_size>10*1024*1024:
-        await update.message.reply_text(f"File too big! {doc.file_size/1024/1024:.1f}MB > 10MB"); return
-    status=await update.message.reply_text(f"📂 Reading **{file_name}**...", parse_mode="Markdown")
+    fn=doc.file_name or "file"; ext=fn.split(".")[-1].lower()
+    if doc.file_size and doc.file_size>20*1024*1024: await update.message.reply_text("Too big >20MB"); return
+    status=await update.message.reply_text(f"📂 Reading **{fn}**...",parse_mode="Markdown")
     try:
-        tg_file=await context.bot.get_file(doc.file_id)
-        file_bytes=io.BytesIO()
-        await tg_file.download_to_memory(file_bytes)
-        file_bytes.seek(0)
-        content=""
-        if ext in ["txt","py","js","json","html","css","md","csv","log","env","sh","bat","xml","yaml","yml","ini","ts","jsx","tsx"]:
-            content=file_bytes.read().decode('utf-8', errors='ignore')[:15000]
-        elif ext=="pdf":
-            if not HAS_PDF:
-                await status.edit_text("Add `PyPDF2` to requirements.txt to read PDFs"); return
-            reader=PyPDF2.PdfReader(file_bytes)
-            txts=[]
-            for page in reader.pages[:10]:
-                try: txts.append(page.extract_text() or "")
-                except: continue
-            content="\n".join(txts)[:15000]
-            if not content.strip(): content="[PDF no extractable text - scanned?]"
-        else:
+        tg=await context.bot.get_file(doc.file_id); buf=io.BytesIO(); await tg.download_to_memory(buf); buf.seek(0)
+        if ext=="zip":
             try:
-                content=file_bytes.read().decode('utf-8', errors='ignore')[:10000]
-                if len(content.strip())<5: raise Exception("binary")
-            except:
-                await status.edit_text(f"Can't read `.{ext}` yet. Supported: txt, py, js, json, csv, pdf, code"); return
-        if not content.strip():
-            await status.edit_text("File empty!"); return
-        name=remember(update.effective_user)
-        prompt=f"User uploaded file {file_name} ({len(content)} chars):\n---START---\n{content[:12000]}\n---END---\nSummarize/explain this file to {name}. If code, explain what it does. Tsundere but helpful."
-        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-        reply=await get_ai_reply(name, prompt)
-        await status.edit_text(f"📄 **{file_name}** ({len(content)} chars)\n\n{reply[:3500]}", parse_mode="Markdown")
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton("🎤 Say as voice", callback_data=f"readfile:{doc.file_id}")]])
-        await update.message.reply_text("Want voice version?", reply_markup=kb)
+                with zipfile.ZipFile(buf) as z:
+                    files=z.namelist()
+                    txt=f"📦 **{fn}** {len(files)} files:\n" + "\n".join([f"• `{f}`" for f in files[:25]])
+                    await status.edit_text(txt[:3800],parse_mode="Markdown")
+                    combined=""; c=0
+                    for inner in files:
+                        if c>=3: break
+                        if inner.endswith("/"): continue
+                        if inner.split(".")[-1].lower() in ["txt","py","js","json","md","csv","html","css"]:
+                            try: combined+=f"\n---{inner}---\n"+z.read(inner).decode('utf-8',errors='ignore')[:4000]; c+=1
+                            except: continue
+                    if combined:
+                        r=await get_ai_reply(remember(update.effective_user),f"Zip {fn} content:\n{combined[:9000]}\nSummarize")
+                        await update.message.reply_text(f"📦 Summary:\n{r[:3500]}")
+                    else:
+                        await update.message.reply_text("No readable text files inside.")
+            except zipfile.BadZipFile: await status.edit_text("Bad zip!")
+            return
+        content=""
+        if ext in ["txt","py","js","json","md","csv","log","env","html","css","ts","jsx","xml","yaml","yml","ini","sh"]:
+            content=buf.read().decode('utf-8',errors='ignore')[:15000]
+        elif ext=="pdf":
+            if not HAS_PDF: await status.edit_text("Add PyPDF2 to requirements"); return
+            reader=PyPDF2.PdfReader(buf); content="\n".join([(p.extract_text() or "") for p in reader.pages[:12]])[:15000]
+        else:
+            try: content=buf.read().decode('utf-8',errors='ignore')[:10000]
+            except: await status.edit_text(f"Can't read.{ext}"); return
+        if not content.strip(): await status.edit_text("Empty file"); return
+        r=await get_ai_reply(remember(update.effective_user),f"File {fn}:\n{content[:10000]}\nExplain")
+        await status.edit_text(f"📄 **{fn}** ({len(content)} chars)\n\n{r[:3500]}",parse_mode="Markdown")
+        # FIXED - short callback, no file_id
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("🎤 Voice summary", callback_data="voice_summary")]])
+        await update.message.reply_text("Want voice?", reply_markup=kb)
     except Exception as e:
-        print(f"File err: {e}")
-        await status.edit_text(f"Failed: {e}")
+        print(f"File err {e}"); import traceback; traceback.print_exc()
+        await status.edit_text(f"Error: {e}")
 
-async def on_button(update, context):
-    q=update.callback_query
-    await q.answer()
+async def on_button(u,c):
+    q=u.callback_query; await q.answer()
     data=q.data
     if data.startswith("setvoice:"):
-        v=data.split(":",1)[1]; set_voice(q.from_user.id, v)
-        await q.edit_message_text(f"✅ Voice set to **{v}**! Send voice note 🎤", parse_mode="Markdown")
-    elif data.startswith("readfile:"):
+        v=data.split(":",1)[1]; set_voice(q.from_user.id,v)
+        await q.edit_message_text(f"✅ Voice **{v}** set! Send voice note 🎤",parse_mode="Markdown")
+    elif data=="voice_summary":
         voice=get_voice(q.from_user.id)
-        txt="File summarized above! It's not like I read it for you baka~"
-        path=await tts(voice, txt)
-        if path:
-            await context.bot.send_chat_action(q.message.chat_id, ChatAction.UPLOAD_VOICE)
-            await context.bot.send_voice(chat_id=q.message.chat_id, voice=open(path,'rb'))
-            os.remove(path)
+        path=await tts(voice,"File summarized above baka~!")
+        if path: await c.bot.send_voice(chat_id=q.message.chat_id, voice=open(path,'rb')); os.remove(path)
 
 flask_app=Flask(__name__)
 @flask_app.route('/')
-def home(): return "Star AI Full Running"
-def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
-
+def home(): return "Star AI Owner+YT+Zip Fixed"
+def run_flask(): flask_app.run(host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
 async def main():
-    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=run_flask,daemon=True).start()
     app=Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CallbackQueryHandler(on_button, pattern=r"^(setvoice:|readfile:)"))
-    app.add_handler(MessageHandler(filters.Document.ALL, file_brain))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_brain))
-    app.add_handler(MessageHandler(filters.TEXT, brain))
-    print("Full Bot Ready", flush=True)
+    app.add_handler(CommandHandler("start",start_cmd))
+    app.add_handler(CommandHandler("owner",owner_cmd))
+    app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.Document.ALL,file_brain))
+    app.add_handler(MessageHandler(filters.VOICE|filters.AUDIO,voice_brain))
+    app.add_handler(MessageHandler(filters.TEXT,brain))
     await app.initialize(); await app.start()
     await discover_voices()
     await app.updater.start_polling(drop_pending_updates=True)
+    print("✅ Fixed Bot Running",flush=True)
     await asyncio.Event().wait()
-
-if __name__=="__main__":
-    asyncio.run(main())
+if __name__=="__main__": asyncio.run(main())
