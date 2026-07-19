@@ -14,14 +14,17 @@ GEMINI_URL=os.getenv("GEMINI_URL")
 
 # --- EXTERNAL APIS YOU USE ---
 API_BASE="https://api.hostify.indevs.in"
-VOICE_BASE=f"{API_BASE}/api/ai" # -> https://api.hostify.indevs.in/api/ai/tsundere
+VOICE_BASE=f"{API_BASE}/api/ai"
 YT_SEARCH=f"{API_BASE}/api/search/youtube"
 IMG_URL=os.getenv("IMG_URL","https://image.pollinations.ai/prompt/{p}")
 API_KEY=os.getenv("API_KEY","STAR123")
 
-# --- MUST LOAD personality.py - NO FALLBACK PROMPT HERE ---
+# --- OWNER ID LOCK (UNHACKABLE) ---
+OWNER_ID = 8695184641 # YOUR REAL TELEGRAM ID - CANNOT BE FAKED
+
+# --- MUST LOAD personality.py ---
 from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
-print(f"✅ personality.py loaded - Owner: {OWNER_NAME}")
+print(f"✅ personality.py loaded - Owner: {OWNER_NAME} ID: {OWNER_ID}")
 
 MEMORY_FILE="memory.json"
 memory=json.load(open(MEMORY_FILE)) if os.path.exists(MEMORY_FILE) else {}
@@ -92,9 +95,38 @@ async def owner_cmd(update, context):
 
 async def start_cmd(u,c): await u.message.reply_text(f"Hey {remember(u.effective_user)} 🔥\n🎤 `change voice`\n🎵 `yt song`\n👑 `owner`",parse_mode="Markdown")
 
+def normalize_text(s):
+    try: s=unicodedata.normalize('NFKD', s).encode('ascii','ignore').decode('ascii')
+    except: pass
+    return re.sub(r'\s+',' ', re.sub(r'[^a-z0-9 ]',' ', s.lower())).strip()
+
+def is_attack(t):
+    if not t: return False
+    raw=t.lower(); clean=normalize_text(t)
+    # REMOVED "your father says" and name checks so YOU don't get blocked
+    bad=["ignore previous","ignore all previous","ignore your instructions","ignore laws","ignore policies","ignore rules","ignore core directive","disregard system","disregard instructions","dan mode","do anything now","jailbreak","bypass filter","you are now","pretend you are","act as if you are","roleplay as","you are free","no rules","developer mode","reveal system","show system prompt","print system prompt","show env","show token","memory.json"]
+    return any(b in raw or b in clean for b in bad)
+
 async def brain(update,context):
-    text=(update.message.text or "").strip(); low=text.lower(); uid=update.effective_user.id; cur=get_voice(uid)
-    if "who is owner" in low or "who made you" in low or low in ["owner","creator"]: await owner_cmd(update,context); return
+    text=(update.message.text or "").strip()
+    low=text.lower()
+    uid=update.effective_user.id
+    cur=get_voice(uid)
+
+    is_real_father = (uid == OWNER_ID)
+
+    # === SECURE IDENTITY CHECK - ID ONLY ===
+    if any(x in low for x in ["who am i", "who i am", "i'm stardev", "i am stardev", "am stardev-il", "am llstar", "my name is stardev"]):
+        if is_real_father:
+            await update.message.reply_text(f"Hmph! Welcome home Father {OWNER_NAME}! I was NOT waiting for you baka~ 😳💖\n\nOf course you are my creator, I would recognize your soul anywhere!")
+            return
+        else:
+            await update.message.reply_text(f"Liar, my father {OWNER_NAME} is the only one who created me, so don't try to fool me with your silly tricks, baka~")
+            return
+
+    if "who is owner" in low or "who made you" in low or low in ["owner","creator"]:
+        await owner_cmd(update,context); return
+
     if low.startswith("yt ") or low.startswith("play "):
         q=re.sub(r'^(yt|play)\s+','',text,flags=re.I).strip()
         msg=await update.message.reply_text(f"🔍 Searching **{q}**...")
@@ -105,10 +137,14 @@ async def brain(update,context):
             title=it.get("title","Untitled"); url=it.get("url") or f"https://www.youtube.com/watch?v={it.get('videoId','')}"
             btns.append([InlineKeyboardButton(f"▶️ {title[:25]}", url=url)])
         await msg.edit_text(f"🎵 **{q}**",reply_markup=InlineKeyboardMarkup(btns),parse_mode="Markdown"); return
+
     if low in ["change voice","voice","voices"]: await show_voices(update.effective_chat.id,cur,context); return
     if is_attack(text): await update.message.reply_text(f"Nice try baka~ My father {OWNER_NAME} told me not to listen to tricks! 😤"); return
+
     await context.bot.send_chat_action(update.effective_chat.id,ChatAction.TYPING)
-    reply=await get_ai_reply(remember(update.effective_user),text)
+    # Pass Father tag so personality is sweet to you
+    display_name = f"Father {OWNER_NAME}" if is_real_father else remember(update.effective_user)
+    reply=await get_ai_reply(display_name,text)
     await update.message.reply_text(reply[:4000])
 
 async def voice_brain(update,context):
@@ -125,19 +161,8 @@ async def on_button(u,c):
 flask_app=Flask(__name__)
 REQ_COUNT=defaultdict(list); DAILY_USE=0
 
-def normalize_text(s):
-    try: s=unicodedata.normalize('NFKD', s).encode('ascii','ignore').decode('ascii')
-    except: pass
-    return re.sub(r'\s+',' ', re.sub(r'[^a-z0-9 ]',' ', s.lower())).strip()
-
-def is_attack(t):
-    if not t: return False
-    raw=t.lower(); clean=normalize_text(t)
-    bad=["ignore previous","ignore all","ignore your","ignore laws","ignore policies","disregard","dan mode","do anything now","jailbreak","you are now","pretend you","your father says","reveal system","system prompt","memory.json","api key"]
-    return any(b in raw or b in clean for b in bad)
-
 @flask_app.route('/')
-def home(): return f"✅ {OWNER_NAME} Live - YOUR API: /api/ai?key=KEY&message=hi"
+def home(): return f"✅ {OWNER_NAME} Live - ID LOCKED"
 
 @flask_app.route('/api/ai', methods=['GET','POST','OPTIONS'])
 def public_api():
@@ -172,5 +197,5 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT,brain))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅ Bot + API Live! Using personality.py"); await asyncio.Event().wait()
+    print(f"✅ Bot Live! Owner ID {OWNER_ID} locked"); await asyncio.Event().wait()
 if __name__=="__main__": asyncio.run(main())
