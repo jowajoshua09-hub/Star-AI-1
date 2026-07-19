@@ -76,7 +76,6 @@ async def stt_transcribe(audio_bytes):
         return ""
 
 async def yt_search(q):
-    # 1. Primary API
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(YT_SEARCH, params={"q": q}, timeout=10) as r:
@@ -92,8 +91,6 @@ async def yt_search(q):
                 except: pass
     except Exception as e:
         print(f"[YT] Primary error: {e}")
-
-    # 2. Fallback Invidious
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get("https://yewtu.be/api/v1/search", params={"q": q, "type":"video"}, timeout=10) as r:
@@ -112,8 +109,6 @@ async def yt_search(q):
                         return out
     except Exception as e:
         print(f"[YT] Invidious fail: {e}")
-
-    # 3. Final fallback - always returns something clickable
     print("[YT] Using final fallback")
     return [{
         "title": f"Search: {q}",
@@ -154,16 +149,12 @@ async def brain(update,context):
     uid=update.effective_user.id
     cur=get_voice(uid)
     is_creator = (uid == OWNER_ID)
-
     if low.strip() in ["who am i", "whoami"]:
         if is_creator: await update.message.reply_text(f"You're {OWNER_NAME}, my creator! Of course I know you 🔥"); return
         else: await update.message.reply_text(f"You're {remember(update.effective_user)}! My creator is {OWNER_NAME} btw ✨"); return
-
     if low.strip() in ["i am stardev-il", "i'm stardev-il", "my name is stardev-il", "i am stardev"]:
         if not is_creator: await update.message.reply_text(f"Nah you're not {OWNER_NAME} baka~ Nice try 😤"); return
-
     if "who is owner" in low or "who made you" in low or low in ["owner","creator"]: await owner_cmd(update,context); return
-
     if low.startswith("yt ") or low.startswith("play "):
         q=re.sub(r'^(yt|play)\s+','',text,flags=re.I).strip()
         if not q: await update.message.reply_text("Give song name baka~ `yt faded`"); return
@@ -179,10 +170,8 @@ async def brain(update,context):
             await msg.edit_text(f"❌ No results for **{q}**"); return
         await msg.edit_text(f"🎵 **{q}** - {len(btns)} results:",reply_markup=InlineKeyboardMarkup(btns),parse_mode="Markdown")
         return
-
     if low in ["change voice","voice","voices"]: await show_voices(update.effective_chat.id,cur,context); return
     if is_attack(text): await update.message.reply_text(f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤"); return
-
     await context.bot.send_chat_action(update.effective_chat.id,ChatAction.TYPING)
     display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
     reply=await get_ai_reply(display_name,text)
@@ -222,27 +211,51 @@ REQ_COUNT=defaultdict(list); DAILY_USE=0
 def home(): return f"✅ {OWNER_NAME} Live - YT Fixed"
 @flask_app.route('/docs')
 def docs(): return f"<h1>⭐ Star AI API by {OWNER_NAME}</h1><p>GET /api/ai?key={API_KEY}&message=hi</p>"
+
 @flask_app.route('/api/ai', methods=['GET','POST','OPTIONS'])
 def public_api():
     global DAILY_USE
+    def cors_response(data, code=200):
+        r = jsonify(data)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        r.headers['Access-Control-Allow-Headers'] = 'Content-Type, x-api-key, Authorization'
+        return r, code
+
     if request.method=="OPTIONS":
-        r=jsonify({"ok":True}); r.headers['Access-Control-Allow-Origin']='*'; r.headers['Access-Control-Allow-Headers']='*'; return r
+        return cors_response({"ok":True})
+
     ip=request.headers.get('X-Forwarded-For','').split(',')[0].strip() or request.remote_addr or "unknown"
     now=time(); REQ_COUNT[ip]=[x for x in REQ_COUNT[ip] if now-x<60]
-    if len(REQ_COUNT[ip])>=12: return jsonify({"error":"Rate limit"}),429
+    if len(REQ_COUNT[ip])>=12:
+        return cors_response({"error":"Rate limit - 12/min"},429)
     REQ_COUNT[ip].append(now)
+
     key=request.headers.get("x-api-key") or request.args.get("key") or (request.get_json(silent=True) or {}).get("key")
-    if key!=API_KEY: return jsonify({"error":"Invalid key"}),401
-    if DAILY_USE>=400: return jsonify({"error":"Daily limit"}),429
+    if key!=API_KEY:
+        return cors_response({"error":"Invalid key"},401)
+    if DAILY_USE>=400:
+        return cors_response({"error":"Daily limit"},429)
     DAILY_USE+=1
-    if request.method=="GET": q=request.args.get("message") or "hi"; user=request.args.get("name","friend")
-    else: j=request.get_json(silent=True) or {}; q=j.get("message") or "hi"; user=j.get("name","friend")
+
+    if request.method=="GET":
+        q=request.args.get("message") or request.args.get("prompt") or request.args.get("query") or "hi"
+        user=request.args.get("name","friend")
+    else:
+        j=request.get_json(silent=True) or {}
+        q=j.get("message") or j.get("prompt") or j.get("query") or request.args.get("message") or request.args.get("prompt") or request.args.get("query") or "hi"
+        user=j.get("name","friend")
+
     q=str(q)[:500]
-    if is_attack(q): return jsonify({"result":f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤","blocked":True})
+    if is_attack(q):
+        return cors_response({"result":f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤","blocked":True})
+
     try: reply=asyncio.run(get_ai_reply(user,q))
-    except: reply=f"Hi {user} baka~"
-    res=jsonify({"result":reply,"owner":OWNER_NAME,"status":"success","remaining":400-DAILY_USE})
-    res.headers['Access-Control-Allow-Origin']='*'; return res
+    except Exception as e:
+        print(f"AI error {e}")
+        reply=f"Hi {user} baka~"
+
+    return cors_response({"result":reply,"owner":OWNER_NAME,"status":"success","remaining":400-DAILY_USE})
 
 def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)), debug=False)
 threading.Thread(target=run_flask, daemon=True).start()
