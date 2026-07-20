@@ -1,4 +1,13 @@
-import os, re, json, asyncio, threading, aiohttp, tempfile, unicodedata, io, urllib.parse
+import os
+import re
+import json
+import asyncio
+import threading
+import aiohttp
+import tempfile
+import unicodedata
+import io
+import urllib.parse
 from time import time
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -7,6 +16,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 from telegram.constants import ChatAction
 import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -20,11 +32,20 @@ YT_SEARCH = f"{API_BASE}/api/search/youtube"
 STT_URL = f"{API_BASE}/api/stt"
 API_KEY = os.getenv("API_KEY", "API_KEY2")
 
-OWNER_ID = 8695184641  # int
+OWNER_ID = int(os.getenv("OWNER_ID", "8695184641"))
 
-from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
-print(f"✅ Loaded - Owner: {OWNER_NAME}")
+# Import personality – if missing, create a fallback
+try:
+    from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
+    print(f"✅ Loaded personality - Owner: {OWNER_NAME}")
+except ImportError:
+    print("⚠️ personality.py not found. Using default.")
+    OWNER_NAME = "StarDev-il"
+    OWNER_LINKS = {"WhatsApp": "https://wa.me/1234567890", "Channel": "https://t.me/stardevil"}
+    def get_system_prompt(name):
+        return f"You are Star AI, a helpful assistant created by {OWNER_NAME}. Respond in a friendly, slightly anime-style manner."
 
+# Memory
 MEMORY_FILE = "memory.json"
 memory = json.load(open(MEMORY_FILE)) if os.path.exists(MEMORY_FILE) else {}
 def save():
@@ -46,7 +67,7 @@ VOICE_CACHE = ["tsundere", "yandere", "kuudere", "dandere", "loli", "maid", "one
 async def discover_voices():
     return VOICE_CACHE
 
-# ---------- IMAGE GENERATION (Pollinations) ----------
+# ---------- IMAGE GENERATION ----------
 async def generate_image(prompt):
     try:
         encoded = urllib.parse.quote(prompt)
@@ -73,7 +94,7 @@ async def get_ai_reply(name, msg):
             continue
     return f"Hi {name} baka~ I'm Star AI by {OWNER_NAME}!"
 
-# ---------- TTS (Voice synthesis) ----------
+# ---------- TTS ----------
 async def tts_bytes(voice, text):
     try:
         async with aiohttp.ClientSession() as s:
@@ -84,7 +105,7 @@ async def tts_bytes(voice, text):
         logger.warning(f"TTS fail {e}")
     return None
 
-# ---------- STT (Speech-to-text) ----------
+# ---------- STT ----------
 async def stt_transcribe(audio_bytes):
     try:
         data = aiohttp.FormData()
@@ -97,48 +118,37 @@ async def stt_transcribe(audio_bytes):
         logger.warning(f"STT fail {e}")
         return ""
 
-# ---------- YOUTUBE SEARCH (enhanced) ----------
+# ---------- YOUTUBE SEARCH ----------
 async def yt_search(q):
-    """
-    Returns list of dicts with keys:
-    title, videoId, url, thumbnail, artist (channel name), publishedAt (date)
-    """
     results = []
-    # Try primary API (hostify)
+    # Primary API
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(YT_SEARCH, params={"q": q}, timeout=10) as r:
                 if r.status == 200:
                     txt = await r.text()
-                    print(f"[YT] Primary {r.status}: {txt[:400]}")
                     try:
                         data = json.loads(txt)
+                        items = None
                         if isinstance(data, list):
                             items = data
                         elif isinstance(data, dict):
-                            # find list in common keys
-                            items = None
                             for k in ["results", "data", "videos", "items"]:
                                 if k in data and isinstance(data[k], list) and data[k]:
                                     items = data[k]
                                     break
                             if not items and "videos" in data and isinstance(data["videos"], list):
                                 items = data["videos"]
-                        else:
-                            items = []
                         if items:
                             for it in items[:10]:
                                 vid = it.get("id") or it.get("videoId") or it.get("video_id")
                                 if not vid:
                                     continue
-                                # extract artist: try channel name or uploader
                                 artist = it.get("artist") or it.get("channel") or it.get("uploader") or it.get("author") or "Unknown"
-                                # thumbnail: try multiple fields
                                 thumb = it.get("thumbnail") or it.get("thumb") or it.get("thumbnailUrl") or it.get("bestThumbnail")
                                 if isinstance(thumb, dict):
                                     thumb = thumb.get("url") or thumb.get("src") or ""
                                 if not thumb:
-                                    # fallback to YouTube's thumbnail URL
                                     thumb = f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
                                 date = it.get("publishedAt") or it.get("published") or it.get("uploadDate") or it.get("date") or ""
                                 results.append({
@@ -150,14 +160,13 @@ async def yt_search(q):
                                     "publishedAt": date
                                 })
                             if results:
-                                print(f"[YT] Primary OK {len(results)}")
                                 return results
                     except Exception as e:
-                        print(f"[YT] Parse error: {e}")
+                        logger.warning(f"Parse error: {e}")
     except Exception as e:
-        print(f"[YT] Primary error: {e}")
+        logger.warning(f"Primary YT error: {e}")
 
-    # Fallback: yewtu.be (Invidious)
+    # Fallback: Invidious
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get("https://yewtu.be/api/v1/search", params={"q": q, "type": "video"}, timeout=10) as r:
@@ -176,12 +185,11 @@ async def yt_search(q):
                                 "publishedAt": it.get("published", "")
                             })
                     if results:
-                        print(f"[YT] Invidious OK {len(results)}")
                         return results
     except Exception as e:
-        print(f"[YT] Invidious fail: {e}")
+        logger.warning(f"Invidious fail: {e}")
 
-    # Final fallback: just a search link
+    # Final fallback: link
     return [{
         "title": f"Search: {q}",
         "videoId": "",
@@ -191,6 +199,7 @@ async def yt_search(q):
         "publishedAt": ""
     }]
 
+# ---------- UI HELPERS ----------
 async def show_voices(cid, cur, ctx):
     voices = await discover_voices()
     rows = [InlineKeyboardButton(f"{'✅ ' if v == cur else ''}{v}", callback_data=f"setvoice:{v}") for v in voices]
@@ -216,14 +225,14 @@ async def start_cmd(update, context):
     await update.message.reply_text(
         f"Hey {remember(update.effective_user)} 🔥\n"
         "🎤 `change voice` – change TTS voice\n"
-        "🎵 just type `<song name> song` to search (e.g. `John Michael Howell missing piece song`)\n"
+        "🎵 just type `<song name> song` to search\n"
         "👑 `owner` – about creator\n"
-        "🎨 `imagine a cat` or `generate image of ...` – AI image generation\n"
+        "🎨 `imagine a cat` – AI image generation\n"
         "\nVoice -> Voice\nText -> Text",
         parse_mode="Markdown"
     )
 
-# ---------- IMAGINE COMMAND (slash) ----------
+# ---------- IMAGINE COMMAND ----------
 async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: `/imagine a cat in space`", parse_mode="Markdown")
@@ -272,105 +281,30 @@ def extract_image_prompt(text):
     return None
 
 def extract_song_query(text):
-    """If text ends with 'song' or 'songs', extract the query before it."""
-    text = text.strip()
-    # Check if it ends with " song" or " songs" (case insensitive)
-    m = re.search(r'(.+)\s+song(s?)$', text, re.IGNORECASE)
+    m = re.search(r'(.+)\s+song(s?)$', text.strip(), re.IGNORECASE)
     if m:
         return m.group(1).strip()
     return None
 
-# ---------- MAIN MESSAGE HANDLER ----------
-async def brain(update, context):
-    text = (update.message.text or "").strip()
-    low = text.lower()
-    uid = update.effective_user.id
-    cur = get_voice(uid)
-    is_creator = (uid == OWNER_ID)
-
-    # ----- COMMAND-LIKE TRIGGERS -----
-    if low.strip() in ["who am i", "whoami"]:
-        if is_creator:
-            await update.message.reply_text(f"You're {OWNER_NAME}, my creator! Of course I know you 🔥")
-        else:
-            await update.message.reply_text(f"You're {remember(update.effective_user)}! My creator is {OWNER_NAME} btw ✨")
-        return
-    if low.strip() in ["i am stardev-il", "i'm stardev-il", "my name is stardev-il", "i am stardev"]:
-        if not is_creator:
-            await update.message.reply_text(f"Nah you're not {OWNER_NAME} baka~ Nice try 😤")
-            return
-    if "who is owner" in low or "who made you" in low or low in ["owner", "creator"]:
-        await owner_cmd(update, context)
-        return
-
-    # ----- YOUTUBE SEARCH (via prefix) -----
-    if low.startswith("yt ") or low.startswith("play "):
-        query = re.sub(r'^(yt|play)\s+', '', text, flags=re.I).strip()
-        if not query:
-            await update.message.reply_text("Give song name baka~ e.g. `yt faded`")
-            return
-        await handle_youtube_search(update, context, query)
-        return
-
-    # ----- YOUTUBE SEARCH (via "song" suffix) -----
-    song_query = extract_song_query(text)
-    if song_query:
-        await handle_youtube_search(update, context, song_query)
-        return
-
-    # ----- IMAGE GENERATION TRIGGERS -----
-    prompt = extract_image_prompt(text)
-    if prompt:
-        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
-        url = await generate_image(prompt)
-        if url:
-            await update.message.reply_photo(photo=url, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Image generation failed baka~")
-        return
-
-    # ----- VOICE CHANGE -----
-    if low in ["change voice", "voice", "voices"]:
-        await show_voices(update.effective_chat.id, cur, context)
-        return
-
-    # ----- ATTACK DETECTION -----
-    if is_attack(text):
-        await update.message.reply_text(f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤")
-        return
-
-    # ----- AI CHAT -----
-    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
-    reply = await get_ai_reply(display_name, text)
-    await update.message.reply_text(reply[:4000])
-
-# ---------- YOUTUBE SEARCH HANDLER ----------
 async def handle_youtube_search(update, context, query):
     msg = await update.message.reply_text(f"🔍 Searching **{query}**...", parse_mode="Markdown")
     results = await yt_search(query)
     if not results:
         await msg.edit_text(f"❌ No results for **{query}**")
         return
-
-    # Build inline keyboard with buttons for each result
     btns = []
-    for it in results[:5]:  # limit to 5
+    for it in results[:5]:
         title = it.get("title", "Untitled")[:40]
         url = it.get("url", "")
         if not url:
             continue
-        # Add date if available
         date = it.get("publishedAt", "")
         if date and len(date) > 10:
-            date = date[:10]  # format YYYY-MM-DD
-        label = f"{title}"
+            date = date[:10]
+        label = title
         if date:
             label += f" ({date})"
         btns.append([InlineKeyboardButton(f"▶️ {label}", url=url)])
-
-    # Prepare caption with artist and thumbnail?
-    # We'll send the first result's thumbnail as a photo with a caption listing all results.
     first = results[0]
     thumb = first.get("thumbnail", "")
     caption_lines = [f"🎵 **{query}** – found {len(results)} results:"]
@@ -382,23 +316,85 @@ async def handle_youtube_search(update, context, query):
             date = date[:10]
         caption_lines.append(f"{i}. **{title}** by *{artist}* {f'({date})' if date else ''}")
     caption = "\n".join(caption_lines)
-
     if thumb and thumb.startswith("http"):
-        # send as photo with caption
         await update.message.reply_photo(
             photo=thumb,
             caption=caption,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(btns)
         )
-        await msg.delete()  # remove "Searching..." message
+        await msg.delete()
     else:
-        # send as text
         await msg.edit_text(
             caption + "\n\nClick a button to watch:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(btns)
         )
+
+# ---------- MAIN BRAIN ----------
+async def brain(update, context):
+    text = (update.message.text or "").strip()
+    low = text.lower()
+    uid = update.effective_user.id
+    cur = get_voice(uid)
+    is_creator = (uid == OWNER_ID)
+
+    # Who am I
+    if low.strip() in ["who am i", "whoami"]:
+        if is_creator:
+            await update.message.reply_text(f"You're {OWNER_NAME}, my creator! Of course I know you 🔥")
+        else:
+            await update.message.reply_text(f"You're {remember(update.effective_user)}! My creator is {OWNER_NAME} btw ✨")
+        return
+    if low.strip() in ["i am stardev-il", "i'm stardev-il", "my name is stardev-il", "i am stardev"]:
+        if not is_creator:
+            await update.message.reply_text(f"Nah you're not {OWNER_NAME} baka~ Nice try 😤")
+        return
+    if "who is owner" in low or "who made you" in low or low in ["owner", "creator"]:
+        await owner_cmd(update, context)
+        return
+
+    # YouTube via prefix
+    if low.startswith("yt ") or low.startswith("play "):
+        query = re.sub(r'^(yt|play)\s+', '', text, flags=re.I).strip()
+        if not query:
+            await update.message.reply_text("Give song name baka~ e.g. `yt faded`")
+            return
+        await handle_youtube_search(update, context, query)
+        return
+
+    # YouTube via "song" suffix
+    song_query = extract_song_query(text)
+    if song_query:
+        await handle_youtube_search(update, context, song_query)
+        return
+
+    # Image generation
+    prompt = extract_image_prompt(text)
+    if prompt:
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
+        url = await generate_image(prompt)
+        if url:
+            await update.message.reply_photo(photo=url, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Image generation failed baka~")
+        return
+
+    # Voice change
+    if low in ["change voice", "voice", "voices"]:
+        await show_voices(update.effective_chat.id, cur, context)
+        return
+
+    # Attack detection
+    if is_attack(text):
+        await update.message.reply_text(f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤")
+        return
+
+    # AI Chat
+    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+    display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
+    reply = await get_ai_reply(display_name, text)
+    await update.message.reply_text(reply[:4000])
 
 # ---------- VOICE HANDLER ----------
 async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,17 +414,16 @@ async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
         reply = await get_ai_reply(display_name, transcribed)
-        # Try TTS, fallback to text
         audio = await tts_bytes(cur, reply)
         if audio:
             await context.bot.send_voice(chat_id=chat_id, voice=io.BytesIO(audio))
         else:
-            # If TTS fails, send text
             await context.bot.send_message(chat_id, f"*TTS unavailable, here's the text:*\n{reply[:4000]}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"voice error {e}")
         await context.bot.send_message(chat_id, "⚠️ Voice processing error, try again!")
 
+# ---------- CALLBACK ----------
 async def on_button(update, context):
     q = update.callback_query
     await q.answer()
@@ -436,7 +431,7 @@ async def on_button(update, context):
         set_voice(q.from_user.id, q.data.split(":", 1)[1])
         await q.edit_message_text(f"✅ Voice set to **{q.data.split(':',1)[1]}**", parse_mode="Markdown")
 
-# ---------- FLASK API ----------
+# ---------- FLASK ----------
 flask_app = Flask(__name__)
 REQ_COUNT = defaultdict(list)
 DAILY_USE = 0
@@ -473,4 +468,29 @@ def image_api():
         return cors_response({"error": "Invalid key"}, 401)
 
     if request.method == "GET":
-        prompt = request.args.get("prompt") or reque
+        prompt = request.args.get("prompt") or request.args.get("q") or "cute cat"
+    else:
+        j = request.get_json(silent=True) or {}
+        prompt = j.get("prompt") or j.get("q") or "cute cat"
+
+    prompt = str(prompt)[:200]
+    if is_attack(prompt):
+        return cors_response({"error": "Nice try baka~", "blocked": True}, 400)
+
+    try:
+        # Use get_event_loop to avoid creating new loop
+        loop = asyncio.get_event_loop()
+        url = loop.run_until_complete(generate_image(prompt))
+        if url:
+            return cors_response({"url": url, "prompt": prompt, "status": "success"})
+        else:
+            return cors_response({"error": "Generation failed"}, 500)
+    except Exception as e:
+        logger.error(f"Image API error: {e}")
+        return cors_response({"error": str(e)}, 500)
+
+@flask_app.route('/api/ai', methods=['GET', 'POST', 'OPTIONS'])
+def public_api():
+    global DAILY_USE
+    def cors_response(data, code=200):
+      
