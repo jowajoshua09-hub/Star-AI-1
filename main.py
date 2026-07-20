@@ -486,4 +486,4 @@ def public_api():
         return r, code
 
     if request.method == "OPTIONS":
-        return cors_response({"ok"
+    return cors_response({"ok": True})
