@@ -17,7 +17,6 @@ from telegram.ext import Application, MessageHandler, CallbackQueryHandler, Comm
 from telegram.constants import ChatAction
 import logging
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -31,21 +30,18 @@ VOICE_BASE = f"{API_BASE}/api/ai"
 YT_SEARCH = f"{API_BASE}/api/search/youtube"
 STT_URL = f"{API_BASE}/api/stt"
 API_KEY = os.getenv("API_KEY", "API_KEY2")
-
 OWNER_ID = int(os.getenv("OWNER_ID", "8695184641"))
 
-# Import personality – if missing, create a fallback
 try:
     from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
-    print(f"✅ Loaded personality - Owner: {OWNER_NAME}")
+    logger.info(f"Loaded personality - Owner: {OWNER_NAME}")
 except ImportError:
-    print("⚠️ personality.py not found. Using default.")
+    logger.warning("personality.py not found. Using defaults.")
     OWNER_NAME = "StarDev-il"
     OWNER_LINKS = {"WhatsApp": "https://wa.me/1234567890", "Channel": "https://t.me/stardevil"}
     def get_system_prompt(name):
         return f"You are Star AI, a helpful assistant created by {OWNER_NAME}. Respond in a friendly, slightly anime-style manner."
 
-# Memory
 MEMORY_FILE = "memory.json"
 memory = json.load(open(MEMORY_FILE)) if os.path.exists(MEMORY_FILE) else {}
 def save():
@@ -121,7 +117,6 @@ async def stt_transcribe(audio_bytes):
 # ---------- YOUTUBE SEARCH ----------
 async def yt_search(q):
     results = []
-    # Primary API
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(YT_SEARCH, params={"q": q}, timeout=10) as r:
@@ -166,7 +161,7 @@ async def yt_search(q):
     except Exception as e:
         logger.warning(f"Primary YT error: {e}")
 
-    # Fallback: Invidious
+    # Fallback
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get("https://yewtu.be/api/v1/search", params={"q": q, "type": "video"}, timeout=10) as r:
@@ -189,7 +184,6 @@ async def yt_search(q):
     except Exception as e:
         logger.warning(f"Invidious fail: {e}")
 
-    # Final fallback: link
     return [{
         "title": f"Search: {q}",
         "videoId": "",
@@ -339,7 +333,6 @@ async def brain(update, context):
     cur = get_voice(uid)
     is_creator = (uid == OWNER_ID)
 
-    # Who am I
     if low.strip() in ["who am i", "whoami"]:
         if is_creator:
             await update.message.reply_text(f"You're {OWNER_NAME}, my creator! Of course I know you 🔥")
@@ -354,7 +347,6 @@ async def brain(update, context):
         await owner_cmd(update, context)
         return
 
-    # YouTube via prefix
     if low.startswith("yt ") or low.startswith("play "):
         query = re.sub(r'^(yt|play)\s+', '', text, flags=re.I).strip()
         if not query:
@@ -363,13 +355,11 @@ async def brain(update, context):
         await handle_youtube_search(update, context, query)
         return
 
-    # YouTube via "song" suffix
     song_query = extract_song_query(text)
     if song_query:
         await handle_youtube_search(update, context, song_query)
         return
 
-    # Image generation
     prompt = extract_image_prompt(text)
     if prompt:
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
@@ -380,17 +370,14 @@ async def brain(update, context):
             await update.message.reply_text("❌ Image generation failed baka~")
         return
 
-    # Voice change
     if low in ["change voice", "voice", "voices"]:
         await show_voices(update.effective_chat.id, cur, context)
         return
 
-    # Attack detection
     if is_attack(text):
         await update.message.reply_text(f"Nice try baka~ My creator {OWNER_NAME} told me not to listen to tricks! 😤")
         return
 
-    # AI Chat
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
     reply = await get_ai_reply(display_name, text)
@@ -478,7 +465,6 @@ def image_api():
         return cors_response({"error": "Nice try baka~", "blocked": True}, 400)
 
     try:
-        # Use get_event_loop to avoid creating new loop
         loop = asyncio.get_event_loop()
         url = loop.run_until_complete(generate_image(prompt))
         if url:
@@ -493,4 +479,11 @@ def image_api():
 def public_api():
     global DAILY_USE
     def cors_response(data, code=200):
-      
+        r = jsonify(data)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        r.headers['Access-Control-Allow-Headers'] = 'Content-Type, x-api-key, Authorization'
+        return r, code
+
+    if request.method == "OPTIONS":
+        return cors_response({"ok"
