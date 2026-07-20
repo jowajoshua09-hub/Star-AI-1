@@ -485,5 +485,5 @@ def public_api():
         r.headers['Access-Control-Allow-Headers'] = 'Content-Type, x-api-key, Authorization'
         return r, code
 
-    if request.method == "OPTIONS":
-        return cors_response({"ok"
+if request.method == "OPTIONS":
+    return cors_response({"ok": True})
