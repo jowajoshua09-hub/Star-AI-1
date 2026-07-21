@@ -18,7 +18,7 @@ GEMINI_URL = os.getenv("GEMINI_URL")
 API_BASE = "https://api.hostify.indevs.in"
 VOICE_BASE = f"{API_BASE}/api/ai"
 YT_SEARCH = f"{API_BASE}/api/search/youtube"
-STT_URL = os.getenv("STT_URL", f"{API_BASE}/api/stt")  # allow override via .env
+STT_URL = os.getenv("STT_URL", f"{API_BASE}/api/stt")
 OWNER_ID = int(os.getenv("OWNER_ID", "8695184641"))
 
 from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
@@ -31,6 +31,22 @@ def save():
         json.dump(memory, open(MEMORY_FILE, "w"))
     except:
         pass
+
+# ---------- Group Verification ----------
+GROUP_USERNAME = "@startech372"
+GROUP_LINK = "https://t.me/startech372"
+
+def is_verified(uid):
+    return memory.get(str(uid), {}).get("verified", False)
+
+def set_verified(uid):
+    memory.setdefault(str(uid), {})["verified"] = True
+    save()
+
+def is_owner(uid):
+    return uid == OWNER_ID
+
+# ---------- Voice & Memory ----------
 def get_voice(uid):
     return memory.get(str(uid), {}).get("voice", "tsundere")
 def set_voice(uid, v):
@@ -45,13 +61,9 @@ VOICE_CACHE = ["tsundere", "yandere", "kuudere", "dandere", "loli", "maid", "one
 async def discover_voices():
     return VOICE_CACHE
 
-# ---------- YouTube Search (FIXED) ----------
+# ---------- YouTube Search ----------
 async def yt_search(q):
-    """
-    Returns list of videos with keys: title, videoId, url, thumbnail, artist, publishedAt
-    """
     results = []
-    # Try primary API (hostify)
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(YT_SEARCH, params={"q": q}, timeout=10) as r:
@@ -91,12 +103,12 @@ async def yt_search(q):
                                 })
                             if results:
                                 return results
-                    except Exception as e:
-                        logger.warning(f"Parse error: {e}")
-    except Exception as e:
-        logger.warning(f"Primary YT error: {e}")
+                    except:
+                        pass
+    except:
+        pass
 
-    # Fallback: Invidious (yewtu.be)
+    # Fallback: Invidious
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get("https://yewtu.be/api/v1/search", params={"q": q, "type": "video"}, timeout=10) as r:
@@ -116,10 +128,9 @@ async def yt_search(q):
                             })
                     if results:
                         return results
-    except Exception as e:
-        logger.warning(f"Invidious fail: {e}")
+    except:
+        pass
 
-    # Final fallback: search link
     return [{
         "title": f"Search: {q}",
         "videoId": "",
@@ -129,7 +140,7 @@ async def yt_search(q):
         "publishedAt": ""
     }]
 
-# ---------- TTS & STT (with fallback) ----------
+# ---------- TTS & STT ----------
 async def tts_bytes(voice, text):
     try:
         async with aiohttp.ClientSession() as s:
@@ -141,7 +152,6 @@ async def tts_bytes(voice, text):
     return None
 
 async def stt_transcribe(audio_bytes):
-    """Convert voice to text using STT_URL. Returns text or empty string."""
     try:
         data = aiohttp.FormData()
         data.add_field('audio', audio_bytes, filename='voice.ogg', content_type='audio/ogg')
@@ -151,13 +161,8 @@ async def stt_transcribe(audio_bytes):
                     j = await r.json()
                     return j.get("text") or j.get("transcript") or ""
                 else:
-                    logger.warning(f"STT returned {r.status}")
-                    # Try to read response for debugging
-                    text = await r.text()
-                    logger.warning(f"STT response: {text[:200]}")
                     return ""
-    except Exception as e:
-        logger.warning(f"STT fail {e}")
+    except:
         return ""
 
 # ---------- UI Helpers ----------
@@ -253,7 +258,6 @@ async def handle_youtube_search(update, context, query):
         await msg.edit_text(f"❌ No results for **{query}**")
         return
 
-    # Build inline buttons
     btns = []
     for it in results[:5]:
         title = it.get("title", "Untitled")[:40]
@@ -268,7 +272,6 @@ async def handle_youtube_search(update, context, query):
             label += f" ({date})"
         btns.append([InlineKeyboardButton(f"▶️ {label}", url=url)])
 
-    # First result thumbnail as photo
     first = results[0]
     thumb = first.get("thumbnail", "")
     caption_lines = [f"🎵 **{query}** – found {len(results)} results:"]
@@ -296,13 +299,84 @@ async def handle_youtube_search(update, context, query):
             reply_markup=InlineKeyboardMarkup(btns)
         )
 
-# ---------- Main Brain ----------
+# ---------- Verification Message ----------
+async def verification_required(update, context):
+    """Show verification message with group info and verify button."""
+    text = (
+        f"🌟 **Welcome to Star AI!**\n\n"
+        f"Star AI is an intelligent, witty, and logical AI assistant created by {OWNER_NAME}.\n\n"
+        f"**How it works:**\n"
+        f"• 🎤 Send a voice note – I reply with voice\n"
+        f"• 📝 Type a message – I chat with logic & memory\n"
+        f"• 🎨 `imagine a cat` – generate AI images\n"
+        f"• 🎵 `yt song` – search YouTube\n\n"
+        f"**To use this bot, you MUST join our group first:**\n"
+        f"Join 👉 {GROUP_LINK}\n\n"
+        f"After joining, click **Verify ✅** below – I'll check instantly.\n"
+        f"_(This check happens only once per user.)_"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🚀 Join Group", url=GROUP_LINK)],
+        [InlineKeyboardButton("✅ Verify", callback_data="verify_group")]
+    ]
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def verify_user(update, context):
+    """Handle the verify button callback."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    # If owner, auto-verify
+    if is_owner(user_id):
+        set_verified(user_id)
+        await query.edit_message_text("✅ You're the creator! Verified automatically. Now enjoy Star AI! 🚀")
+        return
+
+    # Check if user is in the group
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id=GROUP_USERNAME, user_id=user_id)
+        if chat_member.status in ["member", "administrator", "creator"]:
+            set_verified(user_id)
+            await query.edit_message_text("✅ **Verified!** You're a member of our group. Now enjoy Star AI! 🚀", parse_mode="Markdown")
+        else:
+            await query.edit_message_text(
+                f"❌ You're not in the group yet. Please join first:\n{GROUP_LINK}\n\nThen click Verify again.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚀 Join Group", url=GROUP_LINK)],
+                    [InlineKeyboardButton("✅ Verify Again", callback_data="verify_group")]
+                ])
+            )
+    except Exception as e:
+        logger.error(f"Verification error: {e}")
+        await query.edit_message_text(
+            "⚠️ Could not verify group membership. Please make sure you've joined the group and try again.\n\n"
+            f"Join here: {GROUP_LINK}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Join Group", url=GROUP_LINK)],
+                [InlineKeyboardButton("🔄 Retry", callback_data="verify_group")]
+            ])
+        )
+
+# ---------- Main Brain (with verification check) ----------
 async def brain(update, context):
+    uid = update.effective_user.id
+
+    # If not verified and not owner – block and show verification
+    if not is_verified(uid) and not is_owner(uid):
+        await verification_required(update, context)
+        return
+
     text = (update.message.text or "").strip()
     low = text.lower()
-    uid = update.effective_user.id
     cur = get_voice(uid)
-    is_creator = (uid == OWNER_ID)
+    is_creator = is_owner(uid)
 
     if low.strip() in ["who am i", "whoami"]:
         if is_creator:
@@ -354,16 +428,22 @@ async def brain(update, context):
 
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
-    user_id = str(update.effective_user.id)
+    user_id = str(uid)
     reply = await get_ai_reply(user_id, display_name, text)
     await update.message.reply_text(reply[:4000])
 
-# ---------- Voice Handler ----------
+# ---------- Voice Handler (with verification check) ----------
 async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+
+    # If not verified and not owner – block and show verification
+    if not is_verified(uid) and not is_owner(uid):
+        await verification_required(update, context)
+        return
+
     chat_id = update.effective_chat.id
     cur = get_voice(uid)
-    is_creator = (uid == OWNER_ID)
+    is_creator = is_owner(uid)
     try:
         await context.bot.send_chat_action(chat_id, ChatAction.RECORD_VOICE)
         file = await (update.message.voice or update.message.audio).get_file()
@@ -375,7 +455,7 @@ async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, "Couldn't hear you baka~ try again 😅")
             return
         display_name = f"{OWNER_NAME} (creator)" if is_creator else remember(update.effective_user)
-        user_id = str(update.effective_user.id)
+        user_id = str(uid)
         reply = await get_ai_reply(user_id, display_name, transcribed)
         audio = await tts_bytes(cur, reply)
         if audio:
@@ -386,14 +466,17 @@ async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"voice error {e}")
         await context.bot.send_message(chat_id, "⚠️ Voice error, try again!")
 
+# ---------- Callback ----------
 async def on_button(update, context):
     q = update.callback_query
     await q.answer()
     if q.data.startswith("setvoice:"):
         set_voice(q.from_user.id, q.data.split(":", 1)[1])
         await q.edit_message_text(f"✅ Voice set to **{q.data.split(':',1)[1]}**", parse_mode="Markdown")
+    elif q.data == "verify_group":
+        await verify_user(update, context)
 
-# ---------- Run Flask in background ----------
+# ---------- Run Flask ----------
 def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False)
 
@@ -409,18 +492,4 @@ async def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("owner", owner_cmd))
-    app.add_handler(CommandHandler("imagine", imagine_cmd))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_brain))
-    app.add_handler(MessageHandler(filters.TEXT, brain))
-
-    await app.initialize()
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-
-    print(f"✅ Bot Live! Voice->Voice | Text->Text | Image Gen | YouTube Search (with thumbnails)")
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.add_handler(Comm
