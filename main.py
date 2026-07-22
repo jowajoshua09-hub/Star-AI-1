@@ -254,19 +254,27 @@ def run_flask():
 async def main():
     if not TOKEN: print("❌ BOT_TOKEN missing"); return
     threading.Thread(target=run_flask, daemon=True).start()
-    app=Application.builder().token(TOKEN).build()
-    try: await app.bot.delete_webhook(drop_pending_updates=True)
-    except: pass
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("owner", owner_cmd))
-    app.add_handler(CommandHandler("imagine", imagine_cmd))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_brain))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, brain))
-    await app.initialize(); await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    print(f"✅ Bot Live on port {PORT}")
-    await asyncio.Event().wait()
+    print(f"✅ Flask started on port {PORT}")
+    while True:
+        try:
+            app=Application.builder().token(TOKEN).build()
+            try: 
+                await app.bot.delete_webhook(drop_pending_updates=True)
+                await asyncio.sleep(3)
+            except: pass
+            app.add_handler(CommandHandler("start", start_cmd))
+            app.add_handler(CommandHandler("owner", owner_cmd))
+            app.add_handler(CommandHandler("imagine", imagine_cmd))
+            app.add_handler(CallbackQueryHandler(on_button))
+            app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_brain))
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, brain))
+            await app.initialize(); await app.start()
+            await app.updater.start_polling(drop_pending_updates=True)
+            print(f"✅ Bot Live on port {PORT}")
+            await asyncio.Event().wait()
+        except Exception as e:
+            print(f"⚠️ Conflict or error, retrying in 10s: {e}")
+            await asyncio.sleep(10)
 
 if __name__=="__main__":
     asyncio.run(main())
