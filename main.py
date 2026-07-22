@@ -3,16 +3,15 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 from telegram.constants import ChatAction
-from flask import Flask
 import logging
 
-from api_client import get_ai_reply
+from api_client import flask_app, get_ai_reply
 from personality import get_system_prompt, OWNER_NAME, OWNER_LINKS
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "8695184641"))
-PORT = int(os.getenv("PORT", 10000))
+PORT = int(os.environ.get("PORT", 10000))
 
 API_BASE = "https://api.hostify.indevs.in"
 VOICE_BASE = f"{API_BASE}/api/ai"
@@ -22,18 +21,8 @@ STT_URL = os.getenv("STT_URL", f"{API_BASE}/api/stt")
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Flask keep-alive ----------
-flask_app = Flask(__name__)
-@flask_app.route('/')
-def home(): return "Star AI TG Bot Alive", 200
-@flask_app.route('/health')
-def health(): return "OK", 200
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
-
-# ---------- Config ----------
 GROUP_USERNAME = "@startech372"
-GROUP_ID = -1004383326043 # REPLACE THIS: Forward channel post to @userinfobot to get real ID
+GROUP_ID = -1004383326043
 GROUP_LINK = "https://t.me/startech372"
 
 WELCOME_TEXT = """Welcome to star AI ✨
@@ -71,19 +60,15 @@ async def is_user_in_channel(user_id, context):
             m = await context.bot.get_chat_member(chat_id=chat, user_id=user_id)
             if m.status in ["member","administrator","creator","owner"]:
                 return True
-        except Exception as e:
-            logger.warning(f"Check {chat} failed: {e}")
-            continue
+        except: continue
     return False
 
-# ---------- Keyboards ----------
 def join_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Join channel", url=GROUP_LINK)],
         [InlineKeyboardButton("Verify", callback_data="verify_group")]
     ])
 
-# ---------- Image ----------
 def get_image_url(prompt: str):
     prompt = prompt.strip()[:600]
     if not prompt: return None
@@ -91,7 +76,6 @@ def get_image_url(prompt: str):
     encoded = urllib.parse.quote(prompt)
     return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={seed}&nologo=true&enhance=true"
 
-# ---------- All your other functions (yt, tts, stt, owner_cmd etc) KEEP SAME ----------
 async def yt_search(q):
     results = []
     try:
@@ -157,7 +141,6 @@ async def owner_cmd(update, context):
     except:
         await update.message.reply_text(caption, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
-# ---------- UNIFIED START & VERIFY ----------
 async def start_cmd(update, context):
     uid = update.effective_user.id
     if is_owner(uid):
@@ -168,11 +151,9 @@ async def start_cmd(update, context):
         if await is_user_in_channel(uid, context):
             await update.message.reply_text(f"{WELCOME_TEXT}\n\n✅ Already verified! Send anything.", parse_mode="Markdown")
             return
-    # Not verified -> Same message as join first
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown", reply_markup=join_keyboard())
 
 async def verification_required(update, context):
-    # Now just calls same layout as start
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown", reply_markup=join_keyboard())
 
 async def verify_user(update, context):
@@ -215,15 +196,6 @@ def extract_image_prompt(text):
         m=re.match(pat,text,re.IGNORECASE)
         if m: return m.group(1).strip()
     return None
-def extract_song_query(text):
-    m=re.search(r'(.+)\s+song(s?)$',text.strip(),re.IGNORECASE)
-    return m.group(1).strip() if m else None
-async def handle_youtube_search(update, context, query):
-    msg=await update.message.reply_text(f"🔍 Searching **{query}**...",parse_mode="Markdown")
-    results=await yt_search(query)
-    if not results: await msg.edit_text(f"❌ No results"); return
-    btns=[[InlineKeyboardButton(f"▶️ {it.get('title','')[:40]}", url=it.get("url",""))] for it in results[:5] if it.get("url")]
-    await msg.edit_text(f"🎵 **{query}** – {len(results)} results:",parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(btns))
 
 async def brain(update, context):
     uid=update.effective_user.id
@@ -233,7 +205,12 @@ async def brain(update, context):
     if "who is owner" in low or low in ["owner","creator"]: await owner_cmd(update, context); return
     if low.startswith("yt ") or low.startswith("play "):
         q=re.sub(r'^(yt|play)\s+','',text,flags=re.I).strip()
-        await handle_youtube_search(update, context, q); return
+        msg=await update.message.reply_text(f"🔍 Searching **{q}**...",parse_mode="Markdown")
+        results=await yt_search(q)
+        if not results: await msg.edit_text(f"❌ No results"); return
+        btns=[[InlineKeyboardButton(f"▶️ {it.get('title','')[:40]}", url=it.get("url",""))] for it in results[:5] if it.get("url")]
+        await msg.edit_text(f"🎵 **{q}** – {len(results)} results:",parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(btns))
+        return
     prompt=extract_image_prompt(text)
     if prompt:
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
@@ -244,7 +221,7 @@ async def brain(update, context):
     if low in ["change voice","voice","voices"]: await show_voices(update.effective_chat.id, get_voice(uid), context); return
     if is_attack(text): await update.message.reply_text(f"Nice try baka~ 😤"); return
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    display_name=f"{OWNER_NAME} (creator)" if is_owner(uid) else remember(update.effective_user)
+    display_name=f"{OWNER_NAME} (creator)" if is_owner(uid) else (update.effective_user.first_name or "friend")
     reply=await get_ai_reply(str(uid), display_name, text)
     await update.message.reply_text(reply[:4000])
 
@@ -258,7 +235,7 @@ async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bio=io.BytesIO(); await file.download_to_memory(bio); bio.seek(0)
         transcribed=await stt_transcribe(bio.read())
         if not transcribed: await context.bot.send_message(chat_id,"Couldn't hear you 😅"); return
-        reply=await get_ai_reply(str(uid), remember(update.effective_user), transcribed)
+        reply=await get_ai_reply(str(uid), update.effective_user.first_name or "friend", transcribed)
         audio=await tts_bytes(cur, reply)
         if audio: await context.bot.send_voice(chat_id=chat_id, voice=io.BytesIO(audio))
         else: await context.bot.send_message(chat_id, reply[:4000])
@@ -269,6 +246,10 @@ async def on_button(update, context):
     q=update.callback_query; await q.answer()
     if q.data.startswith("setvoice:"): set_voice(q.from_user.id, q.data.split(":",1)[1]); await q.edit_message_text(f"✅ Voice set to **{q.data.split(':',1)[1]}**",parse_mode="Markdown")
     elif q.data=="verify_group": await verify_user(update, context)
+
+# --- SINGLE FLASK FROM api_client, NOT DUPLICATE ---
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
 async def main():
     if not TOKEN: print("❌ BOT_TOKEN missing"); return
@@ -284,7 +265,7 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, brain))
     await app.initialize(); await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print(f"✅ Bot Live with unified /start + Join")
+    print(f"✅ Bot Live on port {PORT}")
     await asyncio.Event().wait()
 
 if __name__=="__main__":
