@@ -18,6 +18,10 @@ VOICE_BASE = f"{API_BASE}/api/ai"
 YT_SEARCH = f"{API_BASE}/api/search/youtube"
 STT_URL = os.getenv("STT_URL", f"{API_BASE}/api/stt")
 
+# --- OMEGA ENDPOINTS (NO KEY) ---
+OMEGA_IMAGE = "https://api.omegatech.app/api/ai/nano-banana-pro"
+OMEGA_VIDEO = "https://api.omegatech.app/api/ai/grok-3-video"
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -31,6 +35,7 @@ WELCOME_TEXT = """Welcome to star AI ✨
 🎵 `yt song` – YouTube
 👑 `owner`– creator
 🎨 `imagine a cat` – AI image
+🎬 `video cyberpunk city` – AI video
 Voice -> Voice
 Text -> Text
 
@@ -47,7 +52,6 @@ def set_verified(uid): memory.setdefault(str(uid), {})["verified"] = True; save(
 def is_owner(uid): return uid == OWNER_ID
 def get_voice(uid): return memory.get(str(uid), {}).get("voice", "tsundere")
 def set_voice(uid, v): memory.setdefault(str(uid), {})["voice"] = v; save()
-def remember(u): return u.first_name or "friend"
 
 OWNER_IMAGE_PATH = "owner.jpg"
 OWNER_IMAGE_URL = os.getenv("OWNER_IMAGE_URL", "https://i.imgur.com/8Km9tLL.png")
@@ -69,12 +73,60 @@ def join_keyboard():
         [InlineKeyboardButton("Verify", callback_data="verify_group")]
     ])
 
-def get_image_url(prompt: str):
-    prompt = prompt.strip()[:600]
-    if not prompt: return None
+# --- IMAGE / VIDEO LOGIC (NO KEY) ---
+def get_image_url_backup(prompt: str):
     seed = random.randint(1, 9999999)
-    encoded = urllib.parse.quote(prompt)
+    encoded = urllib.parse.quote(prompt.strip()[:600])
     return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={seed}&nologo=true&enhance=true"
+
+async def get_nano_banana_image(prompt: str):
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(OMEGA_IMAGE, params={"prompt": prompt}, timeout=60) as r:
+                ctype = r.headers.get("Content-Type","")
+                if "image" in ctype:
+                    img_bytes = await r.read()
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+                    tmp.write(img_bytes); tmp.close()
+                    return tmp.name
+                txt = await r.text()
+                if not txt: return None
+                # try JSON first
+                try:
+                    data = json.loads(txt)
+                    url = data.get("url") or data.get("image") or data.get("output") or data.get("result") or data.get("data")
+                    if isinstance(url, list): url = url[0]
+                    if isinstance(url, dict): url = url.get("url")
+                    if url: return url
+                except:
+                    pass
+                # if plain URL returned
+                txt = txt.strip().strip('"')
+                if txt.startswith("http"):
+                    return txt
+    except Exception as e:
+        logger.error(f"nano error: {e}")
+    return None
+
+async def get_grok_video(prompt: str):
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(OMEGA_VIDEO, params={"prompt": prompt}, timeout=180) as r:
+                txt = await r.text()
+                if not txt: return None
+                try:
+                    data = json.loads(txt)
+                    url = data.get("url") or data.get("video") or data.get("video_url") or data.get("output")
+                    if isinstance(url, list): url = url[0]
+                    if url: return url
+                except:
+                    pass
+                txt = txt.strip().strip('"')
+                if txt.startswith("http"):
+                    return txt
+    except Exception as e:
+        logger.error(f"grok video error: {e}")
+    return None
 
 async def yt_search(q):
     results = []
@@ -177,10 +229,18 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: `/imagine a cat in space`", parse_mode="Markdown"); return
     prompt = ' '.join(context.args)
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
-    url = get_image_url(prompt)
-    if url:
-        try: await update.message.reply_photo(photo=url, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
-        except: await update.message.reply_text(f"🎨 {prompt}\n{url}")
+    img = await get_nano_banana_image(prompt)
+    if not img: img = get_image_url_backup(prompt)
+    if img:
+        try:
+            if isinstance(img, str) and img.startswith("http"):
+                await update.message.reply_photo(photo=img, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
+            elif os.path.exists(img):
+                with open(img,'rb') as f:
+                    await update.message.reply_photo(photo=f, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
+                os.unlink(img)
+        except: await update.message.reply_text(f"{img}")
+    else: await update.message.reply_text("❌ Image gen failed.")
 
 def normalize_text(s):
     try: s=unicodedata.normalize('NFKD',s).encode('ascii','ignore').decode('ascii')
@@ -203,6 +263,20 @@ async def brain(update, context):
         await verification_required(update, context); return
     text=(update.message.text or "").strip(); low=text.lower()
     if "who is owner" in low or low in ["owner","creator"]: await owner_cmd(update, context); return
+
+    if low.startswith("video ") or low.startswith("generate video ") or low.startswith("make video "):
+        v_prompt = re.sub(r'^(video|generate video|make video)\s+', '', text, flags=re.I).strip()
+        if not v_prompt:
+            await update.message.reply_text("Usage: `video cyberpunk city with neon lights`", parse_mode="Markdown"); return
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_VIDEO)
+        status = await update.message.reply_text(f"🎬 Generating video: *{v_prompt[:100]}*...", parse_mode="Markdown")
+        video_url = await get_grok_video(v_prompt)
+        if video_url:
+            try: await update.message.reply_video(video=video_url, caption=f"🎬 {v_prompt[:200]}"); await status.delete()
+            except: await status.edit_text(f"Done!\n{video_url}")
+        else: await status.edit_text("❌ Video gen failed, try again.")
+        return
+
     if low.startswith("yt ") or low.startswith("play "):
         q=re.sub(r'^(yt|play)\s+','',text,flags=re.I).strip()
         msg=await update.message.reply_text(f"🔍 Searching **{q}**...",parse_mode="Markdown")
@@ -211,13 +285,24 @@ async def brain(update, context):
         btns=[[InlineKeyboardButton(f"▶️ {it.get('title','')[:40]}", url=it.get("url",""))] for it in results[:5] if it.get("url")]
         await msg.edit_text(f"🎵 **{q}** – {len(results)} results:",parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(btns))
         return
+
     prompt=extract_image_prompt(text)
     if prompt:
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
-        url=get_image_url(prompt)
-        try: await update.message.reply_photo(photo=url, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
-        except: await update.message.reply_text(f"{url}")
+        img = await get_nano_banana_image(prompt)
+        if not img:
+            logger.info("Nano failed, fallback to Pollinations")
+            img = get_image_url_backup(prompt)
+        try:
+            if isinstance(img, str) and img.startswith("http"):
+                await update.message.reply_photo(photo=img, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
+            elif img and os.path.exists(img):
+                with open(img,'rb') as f: await update.message.reply_photo(photo=f, caption=f"🎨 *{prompt[:200]}*", parse_mode="Markdown")
+                os.unlink(img)
+            else: await update.message.reply_text(f"{img}")
+        except Exception as e: await update.message.reply_text(f"Image ready: {img}\nError: {e}")
         return
+
     if low in ["change voice","voice","voices"]: await show_voices(update.effective_chat.id, get_voice(uid), context); return
     if is_attack(text): await update.message.reply_text(f"Nice try baka~ 😤"); return
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
@@ -239,15 +324,13 @@ async def voice_brain(update: Update, context: ContextTypes.DEFAULT_TYPE):
         audio=await tts_bytes(cur, reply)
         if audio: await context.bot.send_voice(chat_id=chat_id, voice=io.BytesIO(audio))
         else: await context.bot.send_message(chat_id, reply[:4000])
-    except Exception as e:
-        logger.error(f"voice error {e}")
+    except Exception as e: logger.error(f"voice error {e}")
 
 async def on_button(update, context):
     q=update.callback_query; await q.answer()
     if q.data.startswith("setvoice:"): set_voice(q.from_user.id, q.data.split(":",1)[1]); await q.edit_message_text(f"✅ Voice set to **{q.data.split(':',1)[1]}**",parse_mode="Markdown")
     elif q.data=="verify_group": await verify_user(update, context)
 
-# --- SINGLE FLASK FROM api_client, NOT DUPLICATE ---
 def run_flask():
     flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
 
@@ -258,9 +341,7 @@ async def main():
     while True:
         try:
             app=Application.builder().token(TOKEN).build()
-            try: 
-                await app.bot.delete_webhook(drop_pending_updates=True)
-                await asyncio.sleep(3)
+            try: await app.bot.delete_webhook(drop_pending_updates=True); await asyncio.sleep(3)
             except: pass
             app.add_handler(CommandHandler("start", start_cmd))
             app.add_handler(CommandHandler("owner", owner_cmd))
@@ -270,11 +351,10 @@ async def main():
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, brain))
             await app.initialize(); await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
-            print(f"✅ Bot Live on port {PORT}")
+            print(f"✅ Bot Live | NanoBanana Primary | Pollinations Backup | Grok Video")
             await asyncio.Event().wait()
         except Exception as e:
-            print(f"⚠️ Conflict or error, retrying in 10s: {e}")
-            await asyncio.sleep(10)
+            print(f"⚠️ Error, retrying in 10s: {e}"); await asyncio.sleep(10)
 
 if __name__=="__main__":
     asyncio.run(main())
